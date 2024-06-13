@@ -48,13 +48,14 @@ class Upsample1D(nn.Module):
             )
 
     def forward(self, inputs: Tensor) -> Tensor:
+        raise NotImplementedError("upsampling1d not implemented.")
         assert inputs.shape()[-1] == self.channels
-        if self.use_conv_transpose:
+        if self.use_conv_transpose and self.conv is not None:
             return self.conv(inputs)
 
         outputs = ops.upsampling2d(scale_factor=2.0, mode="nearest")(inputs)
 
-        if self.use_conv:
+        if self.use_conv and self.conv is not None:
             outputs = self.conv(outputs)
 
         return outputs
@@ -100,9 +101,11 @@ class Upsample2D(nn.Module):
         self.interpolate = interpolate
 
         if norm_type == "ln_norm":
-            self.norm = nn.LayerNorm(channels, eps, elementwise_affine)
+            self.norm = nn.LayerNorm(
+                channels, eps, elementwise_affine=elementwise_affine
+            )
         elif norm_type == "rms_norm":
-            self.norm = RMSNorm(channels, eps, elementwise_affine)
+            self.norm = RMSNorm(channels, eps, elementwise_affine=elementwise_affine)
         elif norm_type is None:
             self.norm = None
         else:
@@ -127,7 +130,6 @@ class Upsample2D(nn.Module):
                 self.out_channels,
                 kernel_size=kernel_size,
                 padding=padding,
-                bias=bias,
             )
 
         # TODO(Suraj, Patrick) - clean up after weight dicts are correctly renamed
@@ -143,9 +145,7 @@ class Upsample2D(nn.Module):
         assert hidden_states.shape()[-1] == self.channels
 
         if self.norm is not None:
-            hidden_states = self.norm(hidden_states.permute(0, 2, 3, 1)).permute(
-                0, 3, 1, 2
-            )
+            hidden_states = self.norm(hidden_states)
 
         if self.use_conv_transpose:
             return self.conv(hidden_states)
@@ -157,6 +157,7 @@ class Upsample2D(nn.Module):
         if dtype == "bfloat16":
             hidden_states = ops.cast()(hidden_states, "float32")
 
+        # TODO: test this with AIT kernel
         # # upsample_nearest_nhwc fails with large batch sizes. see https://github.com/huggingface/diffusers/issues/984
         # if hidden_states.shape[0] >= 64:
         #     hidden_states = hidden_states.contiguous()

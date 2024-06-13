@@ -33,9 +33,8 @@ class RMSNorm(nn.Module):
     def forward(self, hidden_states: Tensor):
         input_dtype = hidden_states.dtype()
 
-        variance = ops.reduce_mean(-1, keepdim=True)(
-            ops.pow(ops.cast()(hidden_states, "float32"), 2)
-        )
+        hidden_states = ops.cast()(hidden_states, "float32")
+        variance = ops.reduce_mean(-1, keepdim=True)(ops.pow(hidden_states, 2))
         hidden_states = hidden_states * (1.0 / ops.sqrt(variance + self.eps))
 
         if self.weight is not None:
