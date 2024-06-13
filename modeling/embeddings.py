@@ -5,6 +5,8 @@ from aitemplate.compiler import ops
 
 from aitemplate.frontend import nn, Tensor
 
+# TODO: sync with diffusers
+
 
 def get_2d_sincos_pos_embed(
     embed_dim,
