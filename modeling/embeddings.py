@@ -8,6 +8,11 @@ from aitemplate.frontend import nn, Tensor
 # TODO: sync with diffusers
 
 
+def get_shape(x):
+    shape = [it.value() for it in x._attrs["shape"]]
+    return shape
+
+
 def get_2d_sincos_pos_embed(
     embed_dim,
     grid_size,
@@ -212,6 +217,14 @@ class PixArtAlphaCombinedTimestepSizeEmbeddings(nn.Module):
                 arange_name="additional_condition_proj",
                 dtype=dtype,
             )
+            # NOTE: Weird AIT bug in constant folding pass where `additional_condition_proj` is used twice
+            self.additional_condition_proj_ar = Timesteps(
+                num_channels=256,
+                flip_sin_to_cos=True,
+                downscale_freq_shift=0,
+                arange_name="additional_condition_proj_ar",
+                dtype=dtype,
+            )
             self.resolution_embedder = TimestepEmbedding(
                 in_channels=256, time_embed_dim=size_emb_dim, dtype=dtype
             )
@@ -220,8 +233,13 @@ class PixArtAlphaCombinedTimestepSizeEmbeddings(nn.Module):
             )
 
     def forward(
-        self, timestep: Tensor, resolution: Tensor, aspect_ratio: Tensor, batch_size
+        self,
+        timestep: Tensor,
+        resolution: Tensor,
+        aspect_ratio: Tensor,
+        batch_size=None,
     ):
+        batch_size = ops.size()(timestep, dim=0)
         timesteps_proj = self.time_proj(timestep)
         timesteps_emb = self.timestep_embedder(timesteps_proj)  # (N, D)
 
@@ -233,7 +251,7 @@ class PixArtAlphaCombinedTimestepSizeEmbeddings(nn.Module):
             resolution_emb = ops.reshape()(
                 self.resolution_embedder(resolution_emb), [batch_size, -1]
             )
-            aspect_ratio_emb = self.additional_condition_proj(
+            aspect_ratio_emb = self.additional_condition_proj_ar(
                 ops.flatten()(aspect_ratio)
             )
             aspect_ratio_emb = ops.reshape()(
