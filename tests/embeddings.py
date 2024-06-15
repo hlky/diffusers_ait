@@ -128,7 +128,6 @@ class EmbeddingsTestCase(unittest.TestCase):
             msg=lambda msg: f"{msg}\n\npt ({y_pt.shape}):\n{y_pt}\n\nait ({y.shape}):\n{y}\n\n",
         )
 
-    # PixArtAlphaCombinedTimestepSizeEmbeddings
     def _test_pixart_alpha_combined_timestep_size_embeddings(
         self,
         shape: List[int],
@@ -238,6 +237,129 @@ class EmbeddingsTestCase(unittest.TestCase):
             msg=lambda msg: f"{msg}\n\npt ({y_pt.shape}):\n{y_pt}\n\nait ({y.shape}):\n{y}\n\n",
         )
 
+    def _test_patch_embed(
+        self,
+        shape: List[int],
+        height: int,
+        width: int,
+        patch_size: int,
+        in_channels: int,
+        embed_dim: int,
+        interpolation_scale: float,
+        flatten: bool,
+        layer_norm: bool,
+        bias: bool,
+        dtype: str = "float16",
+        tolerance: float = 1e-5,
+    ):
+        batch, channels, h, w = shape
+        latent_h, latent_w = h // 8, w // 8
+        x = get_random_torch_tensor([batch, channels, latent_h, latent_w], dtype=dtype)
+        x_ait = x.clone().permute(0, 2, 3, 1).contiguous().to(x.device, x.dtype)
+
+        op = (
+            embeddings_torch.PatchEmbed(
+                height=height,
+                width=width,
+                patch_size=patch_size,
+                in_channels=in_channels,
+                embed_dim=embed_dim,
+                interpolation_scale=interpolation_scale,
+                flatten=flatten,
+                layer_norm=layer_norm,
+                bias=bias,
+            )
+            .eval()
+            .to(x.device, x.dtype)
+        )
+
+        state_dict_pt = cast(dict[str, torch.Tensor], op.state_dict())
+        state_dict_ait = {}
+        for key, value in state_dict_pt.items():
+            key_ait = key.replace(".", "_")
+            # NOTE: Stored constants, contrary to set constants, appear to skip shape checks.
+            # Correct conditions for weight modifications are important!
+            if value.ndim == 4 and "weight" in key:
+                value = value.permute(0, 2, 3, 1).contiguous()
+            value = value.to(x.device, x.dtype)
+            state_dict_ait[key_ait] = value
+
+        pos_embed = op.get_buffer("pos_embed").to(x.device, x.dtype)
+        # NOTE: AIT is missing arange/meshgrid kernel, this must be calculated externally
+        embed_h = latent_h // patch_size
+        embed_w = latent_w // patch_size
+        if height != embed_h or width != embed_w:
+            pos_embed = embeddings.get_2d_sincos_pos_embed(
+                embed_dim=pos_embed.shape[-1],
+                grid_size=(embed_h, embed_w),
+                base_size=op.base_size,
+                interpolation_scale=interpolation_scale,
+            )
+            pos_embed = torch.from_numpy(pos_embed)
+            pos_embed = pos_embed.float().unsqueeze(0).to(x.device, x.dtype)
+
+        with torch.inference_mode():
+            y_pt: torch.Tensor = op.forward(x)
+            # NOTE: unusual case - pytorch output tensor is not contiguous, AIT requires contiguous output tensors
+            # .contiguous() applied once here fixes AIT output tensor and verification
+            # in practice, output from this module directly is unlikely
+            y_pt = y_pt.contiguous()
+        y = torch.empty_like(y_pt).to(x.device, x.dtype)
+
+        X = Tensor(
+            shape=[batch, latent_h, latent_w, channels],
+            dtype=dtype,
+            name="X",
+            is_input=True,
+        )
+        PosEmbed = Tensor(
+            [1, (latent_h * latent_w) // 4, embed_dim],
+            name="pos_embed",
+            dtype=dtype,
+            is_input=True,
+        )
+        op = embeddings.PatchEmbed(
+            height=height,
+            width=width,
+            patch_size=patch_size,
+            in_channels=in_channels,
+            embed_dim=embed_dim,
+            interpolation_scale=interpolation_scale,
+            flatten=flatten,
+            layer_norm=layer_norm,
+            bias=bias,
+            dtype=dtype,
+        )
+        op.name_parameter_tensor()
+        Y = op.forward(X, PosEmbed)
+        Y = mark_output(Y, "Y")
+
+        target = detect_target()
+        test_name = f"test_patch_embed_{dtype}_h{height}w{width}_patch{patch_size}_c{in_channels}_dim{embed_dim}"
+        if flatten:
+            test_name += "_flatten"
+        if layer_norm:
+            test_name += "_layer_norm"
+        if bias:
+            test_name += "_bias"
+
+        inputs = {"X": x_ait, "pos_embed": pos_embed}
+        module = compile_model(
+            Y,
+            target,
+            "./tmp",
+            test_name,
+            constants=state_dict_ait,
+        )
+        module.run_with_tensors(inputs, [y])
+        torch.testing.assert_close(
+            y,
+            y_pt.to(y.dtype),
+            rtol=tolerance,
+            atol=tolerance,
+            msg=lambda msg: f"{msg}\n\npt ({y_pt.shape}):\n{y_pt}\n\nait ({y.shape}):\n{y}\n\n",
+        )
+
     def test_timestep_embedding(self):
         self._test_timestep_embedding([1, 320], in_channels=320, tolerance=1e-3)
 
@@ -277,6 +399,36 @@ class EmbeddingsTestCase(unittest.TestCase):
             use_additional_conditions=True,
             tolerance=1e-3,
             dtype="float32",
+        )
+
+    def test_patch_embed(self):
+        self._test_patch_embed(
+            shape=[1, 4, 1024, 1024],
+            height=128,
+            width=128,
+            patch_size=2,
+            in_channels=4,
+            embed_dim=1152,
+            interpolation_scale=2,
+            flatten=True,
+            layer_norm=False,
+            bias=True,
+            tolerance=2e-3,
+            dtype="float16",
+        )
+        self._test_patch_embed(
+            shape=[1, 4, 768, 1024],
+            height=128,
+            width=128,
+            patch_size=2,
+            in_channels=4,
+            embed_dim=1152,
+            interpolation_scale=2,
+            flatten=True,
+            layer_norm=False,
+            bias=True,
+            tolerance=2e-3,
+            dtype="float16",
         )
 
 
