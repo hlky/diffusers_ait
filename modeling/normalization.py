@@ -1,6 +1,4 @@
-import numbers
-
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, Union, Iterable
 
 from aitemplate.compiler import ops
 
@@ -13,20 +11,22 @@ from .embeddings import (
     PixArtAlphaCombinedTimestepSizeEmbeddings,
 )
 
+def get_shape(x):
+    shape = [it.value() for it in x._attrs["shape"]]
+    return shape
+
 
 class RMSNorm(nn.Module):
-    def __init__(self, dim, eps: float, elementwise_affine: bool = True):
+    def __init__(self, dim, eps: float, elementwise_affine: bool = True, dtype: str = "float16"):
         super().__init__()
 
         self.eps = eps
 
-        if isinstance(dim, numbers.Integral):
-            dim = (dim,)
-
-        self.dim = dim
+        if isinstance(dim, int):
+            dim = [dim]
 
         if elementwise_affine:
-            self.weight = nn.Parameter(shape=dim, value=1.0, dtype="float16")
+            self.weight = nn.Parameter(shape=dim, value=1.0, dtype=dtype)
         else:
             self.weight = None
 
@@ -57,16 +57,16 @@ class AdaLayerNorm(nn.Module):
         num_embeddings (`int`): The size of the embeddings dictionary.
     """
 
-    def __init__(self, embedding_dim: int, num_embeddings: int):
+    def __init__(self, embedding_dim: int, num_embeddings: int, dtype: str = "float16"):
         super().__init__()
-        self.emb = nn.Embedding(num_embeddings, embedding_dim)
-        self.silu = nn.SiLU()
-        self.linear = nn.Linear(embedding_dim, embedding_dim * 2)
-        self.norm = nn.LayerNorm(embedding_dim, elementwise_affine=False)
+        self.emb = nn.Embedding([num_embeddings, embedding_dim], dtype=dtype)
+        self.silu = ops.silu
+        self.linear = nn.Linear(embedding_dim, embedding_dim * 2, dtype=dtype)
+        self.norm = nn.LayerNorm(embedding_dim, elementwise_affine=False, dtype=dtype)
 
     def forward(self, x: Tensor, timestep: Tensor) -> Tensor:
-        emb = self.linear(self.silu(self.emb(timestep)))
-        scale, shift = ops.chunk()(emb, 2)
+        emb = self.linear(self.silu(self.emb(ops.flatten()(timestep))))
+        scale, shift = ops.chunk()(emb, 2, dim=1)
         x = self.norm(x) * (1 + scale) + shift
         return x
 
