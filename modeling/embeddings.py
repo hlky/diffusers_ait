@@ -389,21 +389,31 @@ class LabelEmbedding(nn.Module):
             labels = self.token_drop(labels, force_drop_ids)
 
         embeddings = self.embedding_table(ops.flatten()(labels))
-        return embeddings
+        return ops.unsqueeze(0)(embeddings)
 
 
 class CombinedTimestepLabelEmbeddings(nn.Module):
-    def __init__(self, num_classes, embedding_dim, class_dropout_prob=0.1):
+    def __init__(
+        self, num_classes, embedding_dim, class_dropout_prob=0.1, dtype: str = "float16"
+    ):
         super().__init__()
 
         self.time_proj = Timesteps(
-            num_channels=256, flip_sin_to_cos=True, downscale_freq_shift=1
+            num_channels=256,
+            flip_sin_to_cos=True,
+            downscale_freq_shift=1,
+            dtype=dtype,
         )
         self.timestep_embedder = TimestepEmbedding(
-            in_channels=256, time_embed_dim=embedding_dim
+            in_channels=256,
+            time_embed_dim=embedding_dim,
+            dtype=dtype,
         )
         self.class_embedder = LabelEmbedding(
-            num_classes, embedding_dim, class_dropout_prob
+            num_classes,
+            embedding_dim,
+            class_dropout_prob,
+            dtype=dtype,
         )
 
     def forward(self, timestep, class_labels, hidden_dtype=None):

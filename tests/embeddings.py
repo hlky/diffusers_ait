@@ -360,7 +360,6 @@ class EmbeddingsTestCase(unittest.TestCase):
             msg=lambda msg: f"{msg}\n\npt ({y_pt.shape}):\n{y_pt}\n\nait ({y.shape}):\n{y}\n\n",
         )
 
-    # PixArtAlphaTextProjection
     def _test_pixart_alpha_text_projection(
         self,
         shape: List[int],
@@ -429,7 +428,6 @@ class EmbeddingsTestCase(unittest.TestCase):
             msg=lambda msg: f"{msg}\n\npt ({y_pt.shape}):\n{y_pt}\n\nait ({y.shape}):\n{y}\n\n",
         )
 
-    # LabelEmbedding
     def _test_label_embedding(
         self,
         shape: List[int],
@@ -486,6 +484,99 @@ class EmbeddingsTestCase(unittest.TestCase):
         target = detect_target()
         test_name = f"test_label_embedding_{dtype}_c{num_classes}_dim{hidden_size}"
         inputs = {"X": x_ait}
+        module = compile_model(
+            Y,
+            target,
+            "./tmp",
+            test_name,
+            constants=state_dict_ait,
+        )
+        module.run_with_tensors(inputs, [y])
+        torch.testing.assert_close(
+            y,
+            y_pt.to(y.dtype),
+            rtol=tolerance,
+            atol=tolerance,
+            msg=lambda msg: f"{msg}\n\npt ({y_pt.shape}):\n{y_pt}\n\nait ({y.shape}):\n{y}\n\n",
+        )
+
+    def _test_combined_timestep_label_embeddings(
+        self,
+        shape: List[int],
+        num_classes: int,
+        hidden_size: int,
+        dtype: str = "float16",
+        tolerance: float = 1e-5,
+    ):
+        batch, num_classes = shape
+        timestep = get_random_torch_tensor([batch], dtype=dtype)
+        timestep_ait = timestep.clone()
+        class_labels = torch.randint(69, 420, shape, device=timestep.device).to(
+            torch.int64
+        )
+        class_labels_ait = class_labels.clone().to(
+            class_labels.device, class_labels.dtype
+        )
+
+        op = (
+            embeddings_torch.CombinedTimestepLabelEmbeddings(
+                num_classes=num_classes,
+                embedding_dim=hidden_size,
+                class_dropout_prob=0.0,
+            )
+            .eval()
+            .to(timestep.device, timestep.dtype)
+        )
+
+        state_dict_pt = cast(dict[str, torch.Tensor], op.state_dict())
+        state_dict_ait = {}
+        for key, value in state_dict_pt.items():
+            key_ait = key.replace(".", "_")
+            if value.ndim == 4 and "weight" in key:
+                value = value.permute(0, 2, 3, 1).contiguous()
+            value = value.to(timestep.device, timestep.dtype)
+            state_dict_ait[key_ait] = value
+
+        state_dict_ait.update(
+            {
+                "arange": torch.arange(start=0, end=256 // 2, dtype=torch.float32).to(
+                    timestep.device, timestep.dtype
+                )
+            }
+        )
+
+        with torch.inference_mode():
+            y_pt: torch.Tensor = op.forward(
+                timestep, class_labels, hidden_dtype=timestep.dtype
+            )
+        y = torch.empty_like(y_pt)
+
+        X = Tensor(
+            shape=[batch],
+            dtype=dtype,
+            name="X",
+            is_input=True,
+        )
+        ClassLabels = Tensor(
+            shape=shape,
+            dtype="int64",
+            name="class_labels",
+            is_input=True,
+        )
+
+        op = embeddings.CombinedTimestepLabelEmbeddings(
+            num_classes=num_classes,
+            embedding_dim=hidden_size,
+            class_dropout_prob=0.0,
+            dtype=dtype,
+        )
+        op.name_parameter_tensor()
+        Y = op.forward(X, ClassLabels)
+        Y = mark_output(Y, "Y")
+
+        target = detect_target()
+        test_name = f"test_combined_timestep_label_embeddings_{dtype}_c{num_classes}_dim{hidden_size}"
+        inputs = {"X": timestep_ait, "class_labels": class_labels_ait}
         module = compile_model(
             Y,
             target,
@@ -595,6 +686,15 @@ class EmbeddingsTestCase(unittest.TestCase):
             num_classes=1000,
             hidden_size=1152,
             tolerance=1e-4,
+            dtype="float16",
+        )
+
+    def test_combined_timestep_label_embeddings(self):
+        self._test_combined_timestep_label_embeddings(
+            shape=[1, 1000],
+            num_classes=1000,
+            hidden_size=1152,
+            tolerance=2e-3,
             dtype="float16",
         )
 
