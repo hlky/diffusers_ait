@@ -425,3 +425,381 @@ class CombinedTimestepLabelEmbeddings(nn.Module):
         conditioning = timesteps_emb + class_labels  # (N, D)
 
         return conditioning
+
+
+class GaussianFourierProjection(nn.Module):
+    """Gaussian Fourier embeddings for noise levels."""
+
+    def __init__(
+        self,
+        embedding_size: int = 256,
+        scale: float = 1.0,
+        set_W_to_weight=True,
+        log=True,
+        flip_sin_to_cos=False,
+        dtype: str = "float16",
+    ):
+        super().__init__()
+        self.weight = nn.Parameter([embedding_size], dtype=dtype)
+        self.log = log
+        self.flip_sin_to_cos = flip_sin_to_cos
+
+        if set_W_to_weight:
+            # to delete later
+            self.W = nn.Parameter([embedding_size], dtype=dtype)
+
+            self.weight = self.W
+
+    def forward(self, x):
+        if self.log:
+            x = ops.log(x)
+
+        x_proj = (
+            ops.unsqueeze(1)(x) * ops.unsqueeze(1)(self.weight.tensor()) * 2 * math.pi
+        )
+
+        if self.flip_sin_to_cos:
+            out = ops.concatenate()(
+                [ops.cos(x_proj), ops.sin(x_proj)],
+                dim=-1,
+            )
+        else:
+            out = ops.concatenate()(
+                [ops.sin(x_proj), ops.cos(x_proj)],
+                dim=-1,
+            )
+        return out
+
+
+class SinusoidalPositionalEmbedding(nn.Module):
+    """Apply positional information to a sequence of embeddings.
+
+    Takes in a sequence of embeddings with shape (batch_size, seq_length, embed_dim) and adds positional embeddings to
+    them
+
+    Args:
+        embed_dim: (int): Dimension of the positional embedding.
+        max_seq_length: Maximum sequence length to apply positional embeddings
+
+    """
+
+    def __init__(
+        self, embed_dim: int, max_seq_length: int = 32, dtype: str = "float16"
+    ):
+        super().__init__()
+        position = ops.unsqueeze(1)(
+            Tensor([max_seq_length], name="position", dtype=dtype)
+        )
+        div_term = ops.exp(
+            Tensor([embed_dim // 2], name="div_term", dtype=dtype)
+            * (-math.log(10000.0) / embed_dim)
+        )
+        raise NotImplementedError("slice assignment not implemented.")
+        pe = torch.zeros(1, max_seq_length, embed_dim)
+        pe[0, :, 0::2] = torch.sin(position * div_term)
+        pe[0, :, 1::2] = torch.cos(position * div_term)
+        self.register_buffer("pe", pe)
+
+    def forward(self, x):
+        _, seq_length, _ = x.shape
+        x = x + self.pe[:, :seq_length]
+        return x
+
+
+class ImagePositionalEmbeddings(nn.Module):
+    """
+    Converts latent image classes into vector embeddings. Sums the vector embeddings with positional embeddings for the
+    height and width of the latent space.
+
+    For more details, see figure 10 of the dall-e paper: https://arxiv.org/abs/2102.12092
+
+    For VQ-diffusion:
+
+    Output vector embeddings are used as input for the transformer.
+
+    Note that the vector embeddings for the transformer are different than the vector embeddings from the VQVAE.
+
+    Args:
+        num_embed (`int`):
+            Number of embeddings for the latent pixels embeddings.
+        height (`int`):
+            Height of the latent image i.e. the number of height embeddings.
+        width (`int`):
+            Width of the latent image i.e. the number of width embeddings.
+        embed_dim (`int`):
+            Dimension of the produced vector embeddings. Used for the latent pixel, height, and width embeddings.
+    """
+
+    def __init__(
+        self,
+        num_embed: int,
+        height: int,
+        width: int,
+        embed_dim: int,
+        dtype: str = "float16",
+    ):
+        super().__init__()
+
+        self.height = height
+        self.width = width
+        self.num_embed = num_embed
+        self.embed_dim = embed_dim
+
+        self.emb = nn.Embedding([self.num_embed, embed_dim], dtype=dtype)
+        self.height_emb = nn.Embedding([self.height, embed_dim], dtype=dtype)
+        self.width_emb = nn.Embedding([self.width, embed_dim], dtype=dtype)
+        self.dtype = dtype
+
+    def forward(self, index: Tensor):
+        emb = self.emb(index)
+
+        height_emb = self.height_emb(
+            ops.unsqueeze(0)(Tensor([self.height], name="height", dtype=self.dtype))
+        )
+
+        # 1 x H x D -> 1 x H x 1 x D
+        height_emb = ops.unsqueeze(2)(height_emb)
+
+        width_emb = self.width_emb(
+            ops.unsqueeze(0)(Tensor([self.width], name="width", dtype=self.dtype))
+        )
+
+        # 1 x W x D -> 1 x 1 x W x D
+        width_emb = ops.unsqueeze(1)(width_emb)
+
+        pos_emb = height_emb + width_emb
+
+        # 1 x H x W x D -> 1 x L xD
+        pos_emb = ops.reshape()(pos_emb, [1, self.height * self.width, -1])
+
+        emb = emb + ops.dynamic_slice()(
+            pos_emb,
+            [0, 0, 0],
+            [None, ops.size()(emb, dim=1)._attrs["int_var"]._attrs["values"][0], None],
+        )
+        # emb = emb + pos_emb[:, : emb.shape[1], :]
+
+        return emb
+
+
+class TextImageProjection(nn.Module):
+    def __init__(
+        self,
+        text_embed_dim: int = 1024,
+        image_embed_dim: int = 768,
+        cross_attention_dim: int = 768,
+        num_image_text_embeds: int = 10,
+        dtype: str = "float16",
+    ):
+        super().__init__()
+
+        self.num_image_text_embeds = num_image_text_embeds
+        self.image_embeds = nn.Linear(
+            image_embed_dim,
+            self.num_image_text_embeds * cross_attention_dim,
+            dtype=dtype,
+        )
+        self.text_proj = nn.Linear(text_embed_dim, cross_attention_dim, dtype=dtype)
+
+    def forward(self, text_embeds: Tensor, image_embeds: Tensor):
+        batch_size = ops.size()(text_embeds, dim=0)
+
+        # image
+        image_text_embeds = self.image_embeds(image_embeds)
+        image_text_embeds = ops.reshape()(
+            image_text_embeds, [batch_size, self.num_image_text_embeds, -1]
+        )
+
+        # text
+        text_embeds = self.text_proj(text_embeds)
+
+        return ops.concatenate()([image_text_embeds, text_embeds], dim=1)
+
+
+class ImageProjection(nn.Module):
+    def __init__(
+        self,
+        image_embed_dim: int = 768,
+        cross_attention_dim: int = 768,
+        num_image_text_embeds: int = 32,
+        dtype: str = "float16",
+    ):
+        super().__init__()
+
+        self.num_image_text_embeds = num_image_text_embeds
+        self.image_embeds = nn.Linear(
+            image_embed_dim,
+            self.num_image_text_embeds * cross_attention_dim,
+            dtype=dtype,
+        )
+        self.norm = nn.LayerNorm(cross_attention_dim, dtype=dtype)
+
+    def forward(self, image_embeds: Tensor):
+        batch_size = ops.size()(image_embeds, dim=0)
+
+        # image
+        image_embeds = self.image_embeds(image_embeds)
+        image_embeds = ops.reshape()(
+            image_embeds, [batch_size, self.num_image_text_embeds, -1]
+        )
+        image_embeds = self.norm(image_embeds)
+        return image_embeds
+
+
+class TextTimeEmbedding(nn.Module):
+    def __init__(
+        self,
+        encoder_dim: int,
+        time_embed_dim: int,
+        num_heads: int = 64,
+        dtype: str = "float16",
+    ):
+        super().__init__()
+        self.norm1 = nn.LayerNorm(encoder_dim, dtype=dtype)
+        self.pool = AttentionPooling(num_heads, encoder_dim, dtype=dtype)
+        self.proj = nn.Linear(encoder_dim, time_embed_dim, dtype=dtype)
+        self.norm2 = nn.LayerNorm(time_embed_dim, dtype=dtype)
+
+    def forward(self, hidden_states: Tensor):
+        hidden_states = self.norm1(hidden_states)
+        hidden_states = self.pool(hidden_states)
+        hidden_states = self.proj(hidden_states)
+        hidden_states = self.norm2(hidden_states)
+        return hidden_states
+
+
+class TextImageTimeEmbedding(nn.Module):
+    def __init__(
+        self,
+        text_embed_dim: int = 768,
+        image_embed_dim: int = 768,
+        time_embed_dim: int = 1536,
+        dtype: str = "float16",
+    ):
+        super().__init__()
+        self.text_proj = nn.Linear(text_embed_dim, time_embed_dim, dtype=dtype)
+        self.text_norm = nn.LayerNorm(time_embed_dim, dtype=dtype)
+        self.image_proj = nn.Linear(image_embed_dim, time_embed_dim, dtype=dtype)
+
+    def forward(self, text_embeds: Tensor, image_embeds: Tensor):
+        # text
+        time_text_embeds: Tensor = self.text_proj(text_embeds)
+        time_text_embeds = self.text_norm(time_text_embeds)
+
+        # image
+        time_image_embeds: Tensor = self.image_proj(image_embeds)
+
+        return time_image_embeds + time_text_embeds
+
+
+class ImageTimeEmbedding(nn.Module):
+    def __init__(self, image_embed_dim: int = 768, time_embed_dim: int = 1536):
+        super().__init__()
+        self.image_proj = nn.Linear(image_embed_dim, time_embed_dim)
+        self.image_norm = nn.LayerNorm(time_embed_dim)
+
+    def forward(self, image_embeds: Tensor):
+        # image
+        time_image_embeds: Tensor = self.image_proj(image_embeds)
+        time_image_embeds = self.image_norm(time_image_embeds)
+        return time_image_embeds
+
+
+class SiLU(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.op = ops.silu
+
+    def forward(self, x: Tensor):
+        return ops.silu(x)
+
+
+class ImageHintTimeEmbedding(nn.Module):
+    def __init__(
+        self,
+        image_embed_dim: int = 768,
+        time_embed_dim: int = 1536,
+        dtype: str = "float16",
+    ):
+        super().__init__()
+        self.image_proj = nn.Linear(image_embed_dim, time_embed_dim)
+        self.image_norm = nn.LayerNorm(time_embed_dim)
+        self.input_hint_block = nn.Sequential(
+            nn.Conv2dBias(3, 16, 3, padding=1, dtype=dtype),
+            SiLU(),
+            nn.Conv2dBias(16, 16, 3, padding=1, dtype=dtype),
+            SiLU(),
+            nn.Conv2dBias(16, 32, 3, padding=1, stride=2, dtype=dtype),
+            SiLU(),
+            nn.Conv2dBias(32, 32, 3, padding=1, dtype=dtype),
+            SiLU(),
+            nn.Conv2dBias(32, 96, 3, padding=1, stride=2, dtype=dtype),
+            SiLU(),
+            nn.Conv2dBias(96, 96, 3, padding=1, dtype=dtype),
+            SiLU(),
+            nn.Conv2dBias(96, 256, 3, padding=1, stride=2, dtype=dtype),
+            SiLU(),
+            nn.Conv2dBias(256, 4, 3, padding=1, dtype=dtype),
+        )
+
+    def forward(self, image_embeds: Tensor, hint: Tensor):
+        # image
+        time_image_embeds: Tensor = self.image_proj(image_embeds)
+        time_image_embeds = self.image_norm(time_image_embeds)
+        hint = self.input_hint_block(hint)
+        return time_image_embeds, hint
+
+
+class AttentionPooling(nn.Module):
+    # Copied from https://github.com/deep-floyd/IF/blob/2f91391f27dd3c468bf174be5805b4cc92980c0b/deepfloyd_if/model/nn.py#L54
+
+    def __init__(self, num_heads, embed_dim, dtype=None):
+        super().__init__()
+        self.dtype = dtype
+        self.positional_embedding = nn.Parameter([1, embed_dim], dtype=dtype)
+        self.k_proj = nn.Linear(embed_dim, embed_dim, dtype=self.dtype)
+        self.q_proj = nn.Linear(embed_dim, embed_dim, dtype=self.dtype)
+        self.v_proj = nn.Linear(embed_dim, embed_dim, dtype=self.dtype)
+        self.num_heads = num_heads
+        self.dim_per_head = embed_dim // self.num_heads
+
+    def forward(self, x: Tensor):
+        raise NotImplementedError("TODO")
+        bs, length, width = ops.size()(x)
+
+        def shape(x):
+            # (bs, length, width) --> (bs, length, n_heads, dim_per_head)
+            x = x.view(bs, -1, self.num_heads, self.dim_per_head)
+            # (bs, length, n_heads, dim_per_head) --> (bs, n_heads, length, dim_per_head)
+            x = x.transpose(1, 2)
+            # (bs, n_heads, length, dim_per_head) --> (bs*n_heads, length, dim_per_head)
+            x = x.reshape(bs * self.num_heads, -1, self.dim_per_head)
+            # (bs*n_heads, length, dim_per_head) --> (bs*n_heads, dim_per_head, length)
+            x = x.transpose(1, 2)
+            return x
+
+        class_token = x.mean(dim=1, keepdim=True) + self.positional_embedding.to(
+            x.dtype
+        )
+        x = torch.cat([class_token, x], dim=1)  # (bs, length+1, width)
+
+        # (bs*n_heads, class_token_length, dim_per_head)
+        q = shape(self.q_proj(class_token))
+        # (bs*n_heads, length+class_token_length, dim_per_head)
+        k = shape(self.k_proj(x))
+        v = shape(self.v_proj(x))
+
+        # (bs*n_heads, class_token_length, length+class_token_length):
+        scale = 1 / math.sqrt(math.sqrt(self.dim_per_head))
+        weight = torch.einsum(
+            "bct,bcs->bts", q * scale, k * scale
+        )  # More stable with f16 than dividing afterwards
+        weight = torch.softmax(weight.float(), dim=-1).type(weight.dtype)
+
+        # (bs*n_heads, dim_per_head, class_token_length)
+        a = torch.einsum("bts,bcs->bct", weight, v)
+
+        # (bs, length+1, width)
+        a = a.reshape(bs, -1, 1).transpose(1, 2)
+
+        return a[:, 0, :]  # cls_token
