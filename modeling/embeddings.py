@@ -368,6 +368,8 @@ class LabelEmbedding(nn.Module):
         )
         self.num_classes = num_classes
         self.dropout_prob = dropout_prob
+        # NOTE: AIT workaround
+        self.training = False
 
     def token_drop(self, labels, force_drop_ids=None):
         """
@@ -385,7 +387,7 @@ class LabelEmbedding(nn.Module):
 
     def forward(self, labels: Tensor, force_drop_ids=None):
         use_dropout = self.dropout_prob > 0
-        if use_dropout or (force_drop_ids is not None):
+        if (self.training and use_dropout) or (force_drop_ids is not None):
             labels = self.token_drop(labels, force_drop_ids)
 
         embeddings = self.embedding_table(ops.flatten()(labels))

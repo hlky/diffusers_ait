@@ -83,14 +83,20 @@ class AdaLayerNormZero(nn.Module):
         num_embeddings (`int`): The size of the embeddings dictionary.
     """
 
-    def __init__(self, embedding_dim: int, num_embeddings: int):
+    def __init__(self, embedding_dim: int, num_embeddings: int, dtype: str = "float16"):
         super().__init__()
 
-        self.emb = CombinedTimestepLabelEmbeddings(num_embeddings, embedding_dim)
+        self.emb = CombinedTimestepLabelEmbeddings(
+            num_embeddings, embedding_dim, dtype=dtype
+        )
 
         self.silu = ops.silu
-        self.linear = nn.Linear(embedding_dim, 6 * embedding_dim, bias=True)
-        self.norm = nn.LayerNorm(embedding_dim, elementwise_affine=False, eps=1e-6)
+        self.linear = nn.Linear(
+            embedding_dim, 6 * embedding_dim, bias=True, dtype=dtype
+        )
+        self.norm = nn.LayerNorm(
+            embedding_dim, elementwise_affine=False, eps=1e-6, dtype=dtype
+        )
 
     def forward(
         self,
@@ -103,9 +109,15 @@ class AdaLayerNormZero(nn.Module):
             self.silu(self.emb(timestep, class_labels, hidden_dtype=hidden_dtype))
         )
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = ops.chunk()(
-            emb, chunks=6, dim=1
+            emb, chunks=6, dim=-1
         )
-        x = self.norm(x) * (1 + ops.unsqueeze(-1)(scale_msa)) + ops.unsqueeze(-1)(
+        shift_msa = ops.squeeze(0)(shift_msa)
+        scale_msa = ops.squeeze(0)(scale_msa)
+        gate_msa = ops.squeeze(0)(gate_msa)
+        shift_mlp = ops.squeeze(0)(shift_mlp)
+        scale_mlp = ops.squeeze(0)(scale_mlp)
+        gate_mlp = ops.squeeze(0)(gate_mlp)
+        x = self.norm(x) * (1 + ops.unsqueeze(1)(scale_msa)) + ops.unsqueeze(1)(
             shift_msa
         )
         return x, gate_msa, shift_mlp, scale_mlp, gate_mlp
