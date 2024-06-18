@@ -173,7 +173,6 @@ class NormalizationTestCase(unittest.TestCase):
             msg=lambda msg: f"{msg}\n\npt ({y_pt.shape}):\n{y_pt}\n\nait ({y.shape}):\n{y}\n\n",
         )
 
-
     def _test_ada_layer_norm_zero(
         self,
         shape: List[int],
@@ -296,24 +295,23 @@ class NormalizationTestCase(unittest.TestCase):
                 msg=lambda msg: f"{msg}\n\n{name}\n\npt ({y_pt.shape}):\n{y_pt}\n\nait ({y.shape}):\n{y}\n\n",
             )
 
-
-    # def test_rms_norm(self):
-    #     self._test_rms_norm(
-    #         shape=[1, 13, 768],
-    #         hidden_size=768,
-    #         eps=1e-6,
-    #         elementwise_affine=True,
-    #         tolerance=1e-3,
-    #         dtype="float16",
-    #     )
-    #     self._test_rms_norm(
-    #         shape=[1, 13, 768],
-    #         hidden_size=768,
-    #         eps=1e-6,
-    #         elementwise_affine=False,
-    #         tolerance=1e-3,
-    #         dtype="float16",
-    #     )
+    def test_rms_norm(self):
+        self._test_rms_norm(
+            shape=[1, 13, 768],
+            hidden_size=768,
+            eps=1e-6,
+            elementwise_affine=True,
+            tolerance=1e-3,
+            dtype="float16",
+        )
+        self._test_rms_norm(
+            shape=[1, 13, 768],
+            hidden_size=768,
+            eps=1e-6,
+            elementwise_affine=False,
+            tolerance=1e-3,
+            dtype="float16",
+        )
 
     def test_ada_layer_norm(self):
         self._test_ada_layer_norm(
