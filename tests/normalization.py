@@ -295,6 +295,126 @@ class NormalizationTestCase(unittest.TestCase):
                 msg=lambda msg: f"{msg}\n\n{name}\n\npt ({y_pt.shape}):\n{y_pt}\n\nait ({y.shape}):\n{y}\n\n",
             )
 
+    def _test_ada_layer_norm_single(
+        self,
+        hidden_size: int,
+        use_additional_conditions: bool,
+        dtype: str = "float16",
+        tolerance: float = 1e-5,
+    ):
+        timestep = get_random_torch_tensor([1], dtype=dtype)
+        timestep_ait = timestep.clone()
+
+        op = (
+            normalization_torch.AdaLayerNormSingle(
+                embedding_dim=hidden_size,
+                use_additional_conditions=use_additional_conditions,
+            )
+            .eval()
+            .to(timestep.device, timestep.dtype)
+        )
+
+        state_dict_pt = cast(dict[str, torch.Tensor], op.state_dict())
+        state_dict_ait = {}
+        for key, value in state_dict_pt.items():
+            key_ait = key.replace(".", "_")
+            if value.ndim == 4 and "weight" in key:
+                value = value.permute(0, 2, 3, 1).contiguous()
+            value = value.to(timestep.device, timestep.dtype)
+            state_dict_ait[key_ait] = value
+
+        batch_size = timestep.shape[0]
+        height, width = 512, 512
+        if use_additional_conditions:
+            resolution = (
+                torch.tensor([height, width])
+                .repeat(batch_size, 1)
+                .to(timestep.device, timestep.dtype)
+            )
+            aspect_ratio = (
+                torch.tensor([float(height / width)])
+                .repeat(batch_size, 1)
+                .to(timestep.device, timestep.dtype)
+            )
+        else:
+            resolution = None
+            aspect_ratio = None
+
+        state_dict_ait.update(
+            {
+                "time_proj": torch.arange(
+                    start=0, end=256 // 2, dtype=torch.float32
+                ).to(timestep.device, timestep.dtype)
+            }
+        )
+        if use_additional_conditions:
+            state_dict_ait.update(
+                {
+                    "additional_condition_proj": torch.arange(
+                        start=0, end=256 // 2, dtype=torch.float32
+                    ).to(timestep.device, timestep.dtype),
+                    "additional_condition_proj_ar": torch.arange(
+                        start=0, end=256 // 2, dtype=torch.float32
+                    ).to(timestep.device, timestep.dtype),
+                }
+            )
+
+        kwargs = {"resolution": resolution, "aspect_ratio": aspect_ratio}
+        with torch.inference_mode():
+            outputs: Tuple[torch.Tensor, torch.Tensor] = op.forward(
+                timestep, kwargs, batch_size, hidden_dtype=timestep.dtype
+            )
+        outputs_ait = {
+            "Y": torch.empty_like(outputs[0]),
+            "embedded_timestep": torch.empty_like(outputs[1]),
+        }
+        for key, tensor in outputs_ait.items():
+            print(f"{key} - {tensor.shape}")
+
+        X = Tensor(shape=[1], dtype=dtype, name="X", is_input=True)
+        Resolution = Tensor(
+            shape=[batch_size, 2], dtype=dtype, name="resolution", is_input=True
+        )
+        AspectRatio = Tensor(
+            shape=[batch_size, 1], dtype=dtype, name="aspect_ratio", is_input=True
+        )
+
+        op = normalization.AdaLayerNormSingle(
+            embedding_dim=hidden_size,
+            use_additional_conditions=use_additional_conditions,
+            dtype=dtype,
+        )
+        op.name_parameter_tensor()
+        Outputs = op.forward(X, Resolution, AspectRatio)
+        Outputs = [
+            mark_output(Outputs[0], "Y"),
+            mark_output(Outputs[1], "embedded_timestep"),
+        ]
+
+        target = detect_target()
+        test_name = f"test_ada_layer_norm_single_{dtype}_dim{hidden_size}_added-cond{use_additional_conditions}"
+        inputs = {"X": timestep_ait}
+        if use_additional_conditions:
+            inputs.update({"resolution": resolution, "aspect_ratio": aspect_ratio})
+        module = compile_model(
+            Outputs,
+            target,
+            "./tmp",
+            test_name,
+            constants=state_dict_ait,
+        )
+        module.run_with_tensors(inputs, outputs_ait)
+        for idx, name in enumerate(outputs_ait.keys()):
+            y: torch.Tensor = outputs_ait[name]
+            y_pt: torch.Tensor = outputs[idx]
+            torch.testing.assert_close(
+                y,
+                y_pt.to(y.dtype),
+                rtol=tolerance,
+                atol=tolerance,
+                msg=lambda msg: f"{msg}\n\n{name}\n\npt ({y_pt.shape}):\n{y_pt}\n\nait ({y.shape}):\n{y}\n\n",
+            )
+
     def test_rms_norm(self):
         self._test_rms_norm(
             shape=[1, 13, 768],
@@ -335,6 +455,14 @@ class NormalizationTestCase(unittest.TestCase):
             hidden_size=1152,
             num_embeddings=1000,
             tolerance=4e-3,
+            dtype="float16",
+        )
+
+    def test_ada_layer_norm_single(self):
+        self._test_ada_layer_norm_single(
+            hidden_size=1152,
+            use_additional_conditions=False,
+            tolerance=1e-3,
             dtype="float16",
         )
 

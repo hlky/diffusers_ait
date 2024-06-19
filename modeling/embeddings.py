@@ -210,6 +210,7 @@ class PixArtAlphaCombinedTimestepSizeEmbeddings(nn.Module):
 
         self.use_additional_conditions = use_additional_conditions
         if use_additional_conditions:
+            raise NotImplementedError("use_additional_conditions")
             self.additional_condition_proj = Timesteps(
                 num_channels=256,
                 flip_sin_to_cos=True,
@@ -248,18 +249,22 @@ class PixArtAlphaCombinedTimestepSizeEmbeddings(nn.Module):
                 resolution is not None and aspect_ratio is not None
             ), "Additional conditions are required."
             resolution_emb = self.additional_condition_proj(ops.flatten()(resolution))
+            print(get_shape(resolution_emb))
             resolution_emb = ops.reshape()(
                 self.resolution_embedder(resolution_emb), [batch_size, -1]
             )
             aspect_ratio_emb = self.additional_condition_proj_ar(
                 ops.flatten()(aspect_ratio)
             )
+            print(get_shape(aspect_ratio_emb))
             aspect_ratio_emb = ops.reshape()(
                 self.aspect_ratio_embedder(aspect_ratio_emb), [batch_size, -1]
             )
-            conditioning = timesteps_emb + ops.concatenate()(
-                [resolution_emb, aspect_ratio_emb], dim=1
-            )
+            print(get_shape(resolution_emb))
+            print(get_shape(aspect_ratio_emb))
+            emb = ops.concatenate()([resolution_emb, aspect_ratio_emb], dim=1)
+            print(get_shape(emb))
+            conditioning = timesteps_emb + emb
         else:
             conditioning = timesteps_emb
 
