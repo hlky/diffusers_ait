@@ -91,6 +91,7 @@ class Upsample2D(nn.Module):
         elementwise_affine=None,
         bias=True,
         interpolate=True,
+        dtype: str = "float16",
     ):
         super().__init__()
         self.channels = channels
@@ -102,10 +103,15 @@ class Upsample2D(nn.Module):
 
         if norm_type == "ln_norm":
             self.norm = nn.LayerNorm(
-                channels, eps, elementwise_affine=elementwise_affine
+                channels,
+                eps,
+                elementwise_affine=elementwise_affine,
+                dtype=dtype,
             )
         elif norm_type == "rms_norm":
-            self.norm = RMSNorm(channels, eps, elementwise_affine=elementwise_affine)
+            self.norm = RMSNorm(
+                channels, eps, elementwise_affine=elementwise_affine, dtype=dtype
+            )
         elif norm_type is None:
             self.norm = None
         else:
@@ -121,6 +127,7 @@ class Upsample2D(nn.Module):
                 kernel_size=kernel_size,
                 stride=2,
                 padding=padding,
+                dtype=dtype,
             )
         elif use_conv:
             if kernel_size is None:
@@ -130,6 +137,7 @@ class Upsample2D(nn.Module):
                 self.out_channels,
                 kernel_size=kernel_size,
                 padding=padding,
+                dtype=dtype,
             )
 
         # TODO(Suraj, Patrick) - clean up after weight dicts are correctly renamed

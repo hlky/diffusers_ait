@@ -183,6 +183,7 @@ class AdaGroupNorm(nn.Module):
         num_groups: int,
         act_fn: Optional[str] = None,
         eps: float = 1e-5,
+        dtype: str = "float16",
     ):
         super().__init__()
         self.num_groups = num_groups
@@ -193,7 +194,7 @@ class AdaGroupNorm(nn.Module):
         else:
             self.act = get_activation(act_fn)
 
-        self.linear = nn.Linear(embedding_dim, out_dim * 2)
+        self.linear = nn.Linear(embedding_dim, out_dim * 2, dtype=dtype)
 
     def forward(self, x: Tensor, emb: Tensor) -> Tensor:
         channels: IntVarTensor = ops.size()(x, dim=-1)

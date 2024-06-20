@@ -61,6 +61,7 @@ class ResnetBlockCondNorm2D(nn.Module):
         down: bool = False,
         conv_shortcut_bias: bool = True,
         conv_2d_out_channels: Optional[int] = None,
+        dtype: str = "float16",
     ):
         super().__init__()
         self.in_channels = in_channels
@@ -76,22 +77,26 @@ class ResnetBlockCondNorm2D(nn.Module):
             groups_out = groups
 
         if self.time_embedding_norm == "ada_group":  # ada_group
-            self.norm1 = AdaGroupNorm(temb_channels, in_channels, groups, eps=eps)
+            self.norm1 = AdaGroupNorm(
+                temb_channels, in_channels, groups, eps=eps, dtype=dtype
+            )
         elif self.time_embedding_norm == "spatial":
-            self.norm1 = SpatialNorm(in_channels, temb_channels)
+            self.norm1 = SpatialNorm(in_channels, temb_channels, dtype=dtype)
         else:
             raise ValueError(
                 f" unsupported time_embedding_norm: {self.time_embedding_norm}"
             )
 
-        self.conv1 = nn.Conv2d(
-            in_channels, out_channels, kernel_size=3, stride=1, padding=1
+        self.conv1 = nn.Conv2dBias(
+            in_channels, out_channels, kernel_size=3, stride=1, padding=1, dtype=dtype
         )
 
         if self.time_embedding_norm == "ada_group":  # ada_group
-            self.norm2 = AdaGroupNorm(temb_channels, out_channels, groups_out, eps=eps)
+            self.norm2 = AdaGroupNorm(
+                temb_channels, out_channels, groups_out, eps=eps, dtype=dtype
+            )
         elif self.time_embedding_norm == "spatial":  # spatial
-            self.norm2 = SpatialNorm(out_channels, temb_channels)
+            self.norm2 = SpatialNorm(out_channels, temb_channels, dtype=dtype)
         else:
             raise ValueError(
                 f" unsupported time_embedding_norm: {self.time_embedding_norm}"
@@ -100,18 +105,23 @@ class ResnetBlockCondNorm2D(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
         conv_2d_out_channels = conv_2d_out_channels or out_channels
-        self.conv2 = nn.Conv2d(
-            out_channels, conv_2d_out_channels, kernel_size=3, stride=1, padding=1
+        self.conv2 = nn.Conv2dBias(
+            out_channels,
+            conv_2d_out_channels,
+            kernel_size=3,
+            stride=1,
+            padding=1,
+            dtype=dtype,
         )
 
         self.nonlinearity = get_activation(non_linearity)
 
         self.upsample = self.downsample = None
         if self.up:
-            self.upsample = Upsample2D(in_channels, use_conv=False)
+            self.upsample = Upsample2D(in_channels, use_conv=False, dtype=dtype)
         elif self.down:
             self.downsample = Downsample2D(
-                in_channels, use_conv=False, padding=1, name="op"
+                in_channels, use_conv=False, padding=1, name="op", dtype=dtype
             )
 
         self.use_in_shortcut = (
@@ -122,13 +132,22 @@ class ResnetBlockCondNorm2D(nn.Module):
 
         self.conv_shortcut = None
         if self.use_in_shortcut:
-            self.conv_shortcut = nn.Conv2d(
-                in_channels,
-                conv_2d_out_channels,
-                kernel_size=1,
-                stride=1,
-                padding=0,
-                bias=conv_shortcut_bias,
+            self.conv_shortcut = (
+                nn.Conv2dBias(
+                    in_channels,
+                    conv_2d_out_channels,
+                    kernel_size=1,
+                    stride=1,
+                    padding=0,
+                )
+                if conv_shortcut_bias
+                else nn.Conv2d(
+                    in_channels,
+                    conv_2d_out_channels,
+                    kernel_size=1,
+                    stride=1,
+                    padding=0,
+                )
             )
 
     def forward(self, input_tensor: Tensor, temb: Tensor, *args, **kwargs) -> Tensor:
@@ -140,10 +159,6 @@ class ResnetBlockCondNorm2D(nn.Module):
         hidden_states = self.nonlinearity(hidden_states)
 
         if self.upsample is not None:
-            # # upsample_nearest_nhwc fails with large batch sizes. see https://github.com/huggingface/diffusers/issues/984
-            # if hidden_states.shape[0] >= 64:
-            #     input_tensor = input_tensor.contiguous()
-            #     hidden_states = hidden_states.contiguous()
             input_tensor = self.upsample(input_tensor)
             hidden_states = self.upsample(hidden_states)
 
