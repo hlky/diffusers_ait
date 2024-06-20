@@ -18,3 +18,13 @@ AIT `ops.vector_norm` aka `torch.linalg.vector_norm` only supports single reduct
 - `normalization`.`GlobalResponseNorm` -> 
     - `Stable Cascade`/`Wuerstchen`
     - `UVit`
+
+Cutlass error
+- `PixArtAlphaCombinedTimestepSizeEmbeddings` - `use_additional_conditions=True`
+    - Possibly none - available PixArt models appear to all use `use_additional_conditions=False`
+
+Missing `AvgPool1d`
+
+Missing `ConvTranspose1d`
+
+Missing `upsampling1d`

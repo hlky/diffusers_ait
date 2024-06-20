@@ -42,7 +42,12 @@ class Downsample1D(nn.Module):
 
         if use_conv:
             self.conv = nn.Conv1d(
-                self.channels, self.out_channels, 3, stride=stride, padding=padding
+                self.channels,
+                self.out_channels,
+                3,
+                stride=stride,
+                padding=padding,
+                bias=True,
             )
         else:
             raise NotImplementedError("AvgPool1d not implemented.")
@@ -82,6 +87,7 @@ class Downsample2D(nn.Module):
         eps=None,
         elementwise_affine=None,
         bias=True,
+        dtype: str = "float16",
     ):
         super().__init__()
         self.channels = channels
@@ -92,26 +98,28 @@ class Downsample2D(nn.Module):
         self.name = name
 
         if norm_type == "ln_norm":
-            self.norm = nn.LayerNorm(channels, eps, elementwise_affine)
+            self.norm = nn.LayerNorm(
+                channels, eps, elementwise_affine=elementwise_affine, dtype=dtype
+            )
         elif norm_type == "rms_norm":
-            self.norm = RMSNorm(channels, eps, elementwise_affine)
+            self.norm = RMSNorm(channels, eps, elementwise_affine, dtype)
         elif norm_type is None:
             self.norm = None
         else:
             raise ValueError(f"unknown norm_type: {norm_type}")
 
         if use_conv:
-            conv = nn.Conv2d(
+            conv = nn.Conv2dBias(
                 self.channels,
                 self.out_channels,
                 kernel_size=kernel_size,
                 stride=stride,
                 padding=padding,
-                bias=bias,
+                dtype=dtype,
             )
         else:
             assert self.channels == self.out_channels
-            conv = nn.AvgPool2d(kernel_size=stride, stride=stride)
+            conv = nn.AvgPool2d(kernel_size=stride, stride=stride, padding=0)
 
         # TODO(Suraj, Patrick) - clean up after weight dicts are correctly renamed
         if name == "conv":
@@ -126,9 +134,7 @@ class Downsample2D(nn.Module):
         assert hidden_states.shape()[-1] == self.channels
 
         if self.norm is not None:
-            hidden_states = self.norm(hidden_states.permute(0, 2, 3, 1)).permute(
-                0, 3, 1, 2
-            )
+            hidden_states = self.norm(hidden_states)
 
         if self.use_conv and self.padding == 0:
             padding = ops.full()([0, 1, 0, 0], 0.0, dtype=self.dtype)
