@@ -451,7 +451,7 @@ class NormalizationTestCase(unittest.TestCase):
             value = value.to(x.device, x.dtype)
             state_dict_ait[key_ait] = value
 
-        with torch.no_grad():
+        with torch.inference_mode():
             y_pt = op.forward(x, emb)
 
         y = torch.empty_like(y_pt.permute(0, 2, 3, 1).contiguous()).to(
@@ -547,7 +547,7 @@ class NormalizationTestCase(unittest.TestCase):
             value = value.to(x.device, x.dtype)
             state_dict_ait[key_ait] = value
 
-        with torch.no_grad():
+        with torch.inference_mode():
             y_pt = op.forward(x, conditioning_embedding)
 
         y = torch.empty_like(y_pt).to(x.device, x.dtype)
@@ -619,7 +619,7 @@ class NormalizationTestCase(unittest.TestCase):
             value = value.to(x.device, x.dtype)
             state_dict_ait[key_ait] = value
 
-        with torch.no_grad():
+        with torch.inference_mode():
             y_pt: torch.Tensor = op.forward(x)
 
         y = torch.empty_like(y_pt).to(x.device, x.dtype)

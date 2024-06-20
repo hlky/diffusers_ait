@@ -12,6 +12,11 @@ from .normalization import AdaGroupNorm
 from .upsampling import Upsample2D  # noqa
 
 
+def get_shape(x):
+    shape = [it.value() for it in x._attrs["shape"]]
+    return shape
+
+
 class ResnetBlockCondNorm2D(nn.Module):
     r"""
     A Resnet block that use normalization layer that incorporate conditioning information.
@@ -236,6 +241,7 @@ class ResnetBlock2D(nn.Module):
         down: bool = False,
         conv_shortcut_bias: bool = True,
         conv_2d_out_channels: Optional[int] = None,
+        dtype: str = "float16",
     ):
         super().__init__()
         if time_embedding_norm == "ada_group":
@@ -262,18 +268,24 @@ class ResnetBlock2D(nn.Module):
             groups_out = groups
 
         self.norm1 = nn.GroupNorm(
-            num_groups=groups, num_channels=in_channels, eps=eps, affine=True
+            num_groups=groups,
+            num_channels=in_channels,
+            eps=eps,
+            affine=True,
+            dtype=dtype,
         )
 
-        self.conv1 = nn.Conv2d(
-            in_channels, out_channels, kernel_size=3, stride=1, padding=1
+        self.conv1 = nn.Conv2dBias(
+            in_channels, out_channels, kernel_size=3, stride=1, padding=1, dtype=dtype
         )
 
         if temb_channels is not None:
             if self.time_embedding_norm == "default":
-                self.time_emb_proj = nn.Linear(temb_channels, out_channels)
+                self.time_emb_proj = nn.Linear(temb_channels, out_channels, dtype=dtype)
             elif self.time_embedding_norm == "scale_shift":
-                self.time_emb_proj = nn.Linear(temb_channels, 2 * out_channels)
+                self.time_emb_proj = nn.Linear(
+                    temb_channels, 2 * out_channels, dtype=dtype
+                )
             else:
                 raise ValueError(
                     f"unknown time_embedding_norm : {self.time_embedding_norm} "
@@ -282,13 +294,22 @@ class ResnetBlock2D(nn.Module):
             self.time_emb_proj = None
 
         self.norm2 = nn.GroupNorm(
-            num_groups=groups_out, num_channels=out_channels, eps=eps, affine=True
+            num_groups=groups_out,
+            num_channels=out_channels,
+            eps=eps,
+            affine=True,
+            dtype=dtype,
         )
 
         self.dropout = nn.Dropout(dropout)
         conv_2d_out_channels = conv_2d_out_channels or out_channels
-        self.conv2 = nn.Conv2d(
-            out_channels, conv_2d_out_channels, kernel_size=3, stride=1, padding=1
+        self.conv2 = nn.Conv2dBias(
+            out_channels,
+            conv_2d_out_channels,
+            kernel_size=3,
+            stride=1,
+            padding=1,
+            dtype=dtype,
         )
 
         self.nonlinearity = get_activation(non_linearity)
@@ -304,7 +325,7 @@ class ResnetBlock2D(nn.Module):
                     nn.upsampling2d(scale_factor=2.0, mode="nearest")
                 )
             else:
-                self.upsample = Upsample2D(in_channels, use_conv=False)
+                self.upsample = Upsample2D(in_channels, use_conv=False, dtype=dtype)
         elif self.down:
             if kernel == "fir":
                 raise NotImplementedError("'fir' downsample_2d not implemented.")
@@ -314,7 +335,7 @@ class ResnetBlock2D(nn.Module):
                 self.downsample = partial(nn.avg_pool2d(kernel_size=2, stride=2, pad=0))
             else:
                 self.downsample = Downsample2D(
-                    in_channels, use_conv=False, padding=1, name="op"
+                    in_channels, use_conv=False, padding=1, name="op", dtype=dtype
                 )
 
         self.use_in_shortcut = (
@@ -325,26 +346,35 @@ class ResnetBlock2D(nn.Module):
 
         self.conv_shortcut = None
         if self.use_in_shortcut:
-            self.conv_shortcut = nn.Conv2d(
-                in_channels,
-                conv_2d_out_channels,
-                kernel_size=1,
-                stride=1,
-                padding=0,
-                bias=conv_shortcut_bias,
+            self.conv_shortcut = (
+                nn.Conv2dBias(
+                    in_channels,
+                    conv_2d_out_channels,
+                    kernel_size=1,
+                    stride=1,
+                    padding=0,
+                    dtype=dtype,
+                )
+                if conv_shortcut_bias
+                else nn.Conv2d(
+                    in_channels,
+                    conv_2d_out_channels,
+                    kernel_size=1,
+                    stride=1,
+                    padding=0,
+                    dtype=dtype,
+                )
             )
 
-    def forward(self, input_tensor: Tensor, temb: Tensor, *args, **kwargs) -> Tensor:
+    def forward(
+        self, input_tensor: Tensor, temb: Optional[Tensor], *args, **kwargs
+    ) -> Tensor:
         hidden_states = input_tensor
 
         hidden_states = self.norm1(hidden_states)
         hidden_states = self.nonlinearity(hidden_states)
 
         if self.upsample is not None:
-            # upsample_nearest_nhwc fails with large batch sizes. see https://github.com/huggingface/diffusers/issues/984
-            if hidden_states.shape[0] >= 64:
-                input_tensor = input_tensor.contiguous()
-                hidden_states = hidden_states.contiguous()
             input_tensor = self.upsample(input_tensor)
             hidden_states = self.upsample(hidden_states)
         elif self.downsample is not None:
@@ -356,7 +386,7 @@ class ResnetBlock2D(nn.Module):
         if self.time_emb_proj is not None:
             if not self.skip_time_act:
                 temb = self.nonlinearity(temb)
-            temb = self.time_emb_proj(temb)[:, :, None, None]
+            temb = ops.unsqueeze(1)(ops.unsqueeze(1)(self.time_emb_proj(temb)))
 
         if self.time_embedding_norm == "default":
             if temb is not None:
@@ -367,7 +397,7 @@ class ResnetBlock2D(nn.Module):
                 raise ValueError(
                     f" `temb` should not be None when `time_embedding_norm` is {self.time_embedding_norm}"
                 )
-            time_scale, time_shift = ops.chunk()(temb, 2, dim=1)
+            time_scale, time_shift = ops.chunk()(temb, 2, dim=-1)
             hidden_states = self.norm2(hidden_states)
             hidden_states = hidden_states * (1 + time_scale) + time_shift
         else:
