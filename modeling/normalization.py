@@ -1,6 +1,7 @@
 from typing import Any, Dict, Iterable, Optional, Tuple, Union
 
 from aitemplate.compiler import ops
+from aitemplate.compiler.base import IntVarTensor
 
 from aitemplate.frontend import nn, Tensor
 
@@ -195,15 +196,17 @@ class AdaGroupNorm(nn.Module):
         self.linear = nn.Linear(embedding_dim, out_dim * 2)
 
     def forward(self, x: Tensor, emb: Tensor) -> Tensor:
-        channels = ops.size()(x, dim=-1)
+        channels: IntVarTensor = ops.size()(x, dim=-1)
         if self.act:
             emb = self.act(emb)
         emb = self.linear(emb)
-        emb = ops.unsqueeze(-1)(emb)
-        emb = ops.unsqueeze(-1)(emb)
-        scale, shift = ops.chunk()(emb, chunks=2, dim=1)
+        emb = ops.unsqueeze(1)(emb)
+        emb = ops.unsqueeze(1)(emb)
+        scale, shift = ops.chunk()(emb, chunks=2, dim=-1)
 
-        x = ops.group_norm(self.num_groups, channels.symbolic_value())
+        x = ops.group_norm(self.num_groups, channels._attrs["symbolic_value"])(
+            x, eps=self.eps
+        )
         x = x * (1 + scale) + shift
         return x
 

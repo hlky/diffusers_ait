@@ -415,6 +415,97 @@ class NormalizationTestCase(unittest.TestCase):
                 msg=lambda msg: f"{msg}\n\n{name}\n\npt ({y_pt.shape}):\n{y_pt}\n\nait ({y.shape}):\n{y}\n\n",
             )
 
+    def _test_ada_group_norm(
+        self,
+        shape: List[int],
+        embedding_dim: int,
+        out_dim: int,
+        num_groups: int,
+        act_fn: Optional[str] = None,
+        eps: float = 1e-5,
+        dtype: str = "float16",
+        tolerance: float = 1e-5,
+    ):
+        b, c, h, w = shape
+        x = get_random_torch_tensor(shape, dtype=dtype)
+        emb = get_random_torch_tensor([shape[0], embedding_dim], dtype=dtype)
+        x_ait = x.clone().permute(0, 2, 3, 1).contiguous().to(x.device, x.dtype)
+        emb_ait = emb.clone().to(emb.device, emb.dtype)
+
+        op = (
+            normalization_torch.AdaGroupNorm(
+                embedding_dim=embedding_dim,
+                out_dim=out_dim,
+                num_groups=num_groups,
+                act_fn=act_fn,
+                eps=eps,
+            )
+            .eval()
+            .to(x.device, x.dtype)
+        )
+
+        state_dict_pt = cast(dict[str, torch.Tensor], op.state_dict())
+        state_dict_ait = {}
+        for key, value in state_dict_pt.items():
+            key_ait = key.replace(".", "_")
+            value = value.to(x.device, x.dtype)
+            state_dict_ait[key_ait] = value
+
+        with torch.no_grad():
+            y_pt = op.forward(x, emb)
+
+        y = torch.empty_like(y_pt.permute(0, 2, 3, 1).contiguous()).to(
+            x.device, x.dtype
+        )
+
+        X = Tensor(
+            shape=[b, h, w, c],
+            dtype=dtype,
+            name="X",
+            is_input=True,
+        )
+        Emb = Tensor(
+            shape=[shape[0], embedding_dim],
+            dtype=dtype,
+            name="Emb",
+            is_input=True,
+        )
+
+        op_ait = normalization.AdaGroupNorm(
+            embedding_dim=embedding_dim,
+            out_dim=out_dim,
+            num_groups=num_groups,
+            act_fn=act_fn,
+            eps=eps,
+        )
+        op_ait.name_parameter_tensor()
+        Y = op_ait.forward(X, Emb)
+        Y = mark_output(Y, "Y")
+
+        target = detect_target()
+        test_name = (
+            f"test_ada_group_norm_{dtype}_dim{out_dim}_groups{num_groups}_eps{eps}"
+        )
+        if act_fn:
+            test_name += f"_{act_fn}"
+        inputs = {"X": x_ait, "Emb": emb_ait}
+        module = compile_model(
+            Y,
+            target,
+            "./tmp",
+            test_name,
+            constants=state_dict_ait,
+        )
+        module.run_with_tensors(inputs, [y])
+        y = y.permute(0, 3, 1, 2).contiguous()
+        torch.testing.assert_close(
+            y,
+            y_pt.to(y.dtype),
+            rtol=tolerance,
+            atol=tolerance,
+            msg=lambda msg: f"{msg}\n\npt ({y_pt.shape}):\n{y_pt}\n\nait ({y.shape}):\n{y}\n\n",
+        )
+
     def test_rms_norm(self):
         self._test_rms_norm(
             shape=[1, 13, 768],
@@ -463,6 +554,16 @@ class NormalizationTestCase(unittest.TestCase):
             hidden_size=1152,
             use_additional_conditions=False,
             tolerance=1e-3,
+            dtype="float16",
+        )
+
+    def test_ada_group_norm(self):
+        self._test_ada_group_norm(
+            shape=[1, 384, 64, 64],
+            embedding_dim=768,
+            out_dim=384,
+            num_groups=768 // 32,
+            tolerance=2e-3,
             dtype="float16",
         )
 
