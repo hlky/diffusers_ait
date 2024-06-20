@@ -248,9 +248,7 @@ class AdaLayerNormContinuous(nn.Module):
     def forward(self, x: Tensor, conditioning_embedding: Tensor) -> Tensor:
         emb = self.linear(self.silu(conditioning_embedding))
         scale, shift = ops.chunk()(emb, 2, dim=1)
-        x = self.norm(x) * ops.unsqueeze(1)(1 + scale) + ops.unsqueeze(1)(
-            shift[:, None, :]
-        )
+        x = self.norm(x) * ops.unsqueeze(1)(1 + scale) + ops.unsqueeze(1)(shift)
         return x
 
 

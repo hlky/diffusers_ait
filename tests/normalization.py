@@ -506,6 +506,156 @@ class NormalizationTestCase(unittest.TestCase):
             msg=lambda msg: f"{msg}\n\npt ({y_pt.shape}):\n{y_pt}\n\nait ({y.shape}):\n{y}\n\n",
         )
 
+    def _test_ada_layer_norm_continuous(
+        self,
+        shape: List[int],
+        embedding_dim: int,
+        conditioning_embedding_dim: int,
+        elementwise_affine: bool = True,
+        eps: float = 1e-5,
+        bias: bool = True,
+        norm_type: str = "layer_norm",
+        dtype: str = "float16",
+        tolerance: float = 1e-5,
+    ):
+        x = get_random_torch_tensor(shape, dtype=dtype)
+        conditioning_embedding = get_random_torch_tensor(
+            [shape[0], conditioning_embedding_dim], dtype=dtype
+        )
+        x_ait = x.clone().to(x.device, x.dtype)
+        conditioning_embedding_ait = conditioning_embedding.clone().to(
+            conditioning_embedding.device, conditioning_embedding.dtype
+        )
+
+        op = (
+            normalization_torch.AdaLayerNormContinuous(
+                embedding_dim=embedding_dim,
+                conditioning_embedding_dim=conditioning_embedding_dim,
+                elementwise_affine=elementwise_affine,
+                eps=eps,
+                bias=bias,
+                norm_type=norm_type,
+            )
+            .eval()
+            .to(x.device, x.dtype)
+        )
+
+        state_dict_pt = cast(dict[str, torch.Tensor], op.state_dict())
+        state_dict_ait = {}
+        for key, value in state_dict_pt.items():
+            key_ait = key.replace(".", "_")
+            value = value.to(x.device, x.dtype)
+            state_dict_ait[key_ait] = value
+
+        with torch.no_grad():
+            y_pt = op.forward(x, conditioning_embedding)
+
+        y = torch.empty_like(y_pt).to(x.device, x.dtype)
+
+        X = Tensor(
+            shape=shape,
+            dtype=dtype,
+            name="X",
+            is_input=True,
+        )
+        ConditioningEmbedding = Tensor(
+            shape=[shape[0], conditioning_embedding_dim],
+            dtype=dtype,
+            name="ConditioningEmbedding",
+            is_input=True,
+        )
+
+        op_ait = normalization.AdaLayerNormContinuous(
+            embedding_dim=embedding_dim,
+            conditioning_embedding_dim=conditioning_embedding_dim,
+            elementwise_affine=elementwise_affine,
+            eps=eps,
+            bias=bias,
+            norm_type=norm_type,
+            dtype=dtype,
+        )
+        op_ait.name_parameter_tensor()
+        Y = op_ait.forward(X, ConditioningEmbedding)
+        Y = mark_output(Y, "Y")
+
+        target = detect_target()
+        test_name = f"test_ada_layer_norm_continuous_{dtype}_dim{embedding_dim}_conditioning_dim{conditioning_embedding_dim}_norm{norm_type}_eps{eps}"
+        inputs = {"X": x_ait, "ConditioningEmbedding": conditioning_embedding_ait}
+        module = compile_model(
+            Y,
+            target,
+            "./tmp",
+            test_name,
+            constants=state_dict_ait,
+        )
+        module.run_with_tensors(inputs, [y])
+        torch.testing.assert_close(
+            y,
+            y_pt.to(y.dtype),
+            rtol=tolerance,
+            atol=tolerance,
+            msg=lambda msg: f"{msg}\n\npt ({y_pt.shape}):\n{y_pt}\n\nait ({y.shape}):\n{y}\n\n",
+        )
+
+    def _test_global_response_norm(
+        self,
+        shape: List[int],
+        dtype: str = "float16",
+        tolerance: float = 1e-5,
+    ):
+        x = get_random_torch_tensor(shape, dtype=dtype)
+        x_ait = x.clone().to(x.device, x.dtype)
+
+        op = (
+            normalization_torch.GlobalResponseNorm(dim=shape[-1])
+            .eval()
+            .to(x.device, x.dtype)
+        )
+
+        state_dict_pt = cast(dict[str, torch.Tensor], op.state_dict())
+        state_dict_ait = {}
+        for key, value in state_dict_pt.items():
+            key_ait = key.replace(".", "_")
+            value = value.to(x.device, x.dtype)
+            state_dict_ait[key_ait] = value
+
+        with torch.no_grad():
+            y_pt: torch.Tensor = op.forward(x)
+
+        y = torch.empty_like(y_pt).to(x.device, x.dtype)
+
+        X = Tensor(
+            shape=shape,
+            dtype=dtype,
+            name="X",
+            is_input=True,
+        )
+
+        op_ait = normalization.GlobalResponseNorm(dim=shape[-1], dtype=dtype)
+        op_ait.name_parameter_tensor()
+        Y = op_ait.forward(X)
+        Y = mark_output(Y, "Y")
+
+        target = detect_target()
+        test_name = f"test_global_response_norm_{dtype}_dim{shape[-1]}"
+        inputs = {"X": x_ait}
+        module = compile_model(
+            Y,
+            target,
+            "./tmp",
+            test_name,
+            constants=state_dict_pt,
+        )
+        module.run_with_tensors(inputs, [y])
+        y = y
+        torch.testing.assert_close(
+            y,
+            y_pt.to(y.dtype),
+            rtol=tolerance,
+            atol=tolerance,
+            msg=lambda msg: f"{msg}\n\npt ({y_pt.shape}):\n{y_pt}\n\nait ({y.shape}):\n{y}\n\n",
+        )
+
     def test_rms_norm(self):
         self._test_rms_norm(
             shape=[1, 13, 768],
@@ -566,6 +716,26 @@ class NormalizationTestCase(unittest.TestCase):
             tolerance=2e-3,
             dtype="float16",
         )
+
+    def test_ada_layer_norm_continuous(self):
+        self._test_ada_layer_norm_continuous(
+            shape=[1, 13, 768],
+            embedding_dim=768,
+            conditioning_embedding_dim=128,
+            elementwise_affine=True,
+            eps=1e-5,
+            bias=True,
+            norm_type="layer_norm",
+            tolerance=2e-3,
+            dtype="float16",
+        )
+
+    # def test_global_response_norm(self):
+    #     self._test_global_response_norm(
+    #         shape=[1, 64, 64, 32],
+    #         tolerance=1e-3,
+    #         dtype="float16",
+    #     )
 
 
 if __name__ == "__main__":
