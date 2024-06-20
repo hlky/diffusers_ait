@@ -1,6 +1,6 @@
 import unittest
 
-from typing import cast, List, Optional, Tuple
+from typing import cast, List, Optional, Tuple, Union
 
 import diffusers.models.resnet as resnet_torch
 
@@ -148,7 +148,7 @@ class ResnetTestCase(unittest.TestCase):
         if down:
             test_name += "_down"
 
-        inputs = {"X": x_ait, "Temb": temb_ait}
+        x = {"X": x_ait, "Temb": temb_ait}
         module = compile_model(
             Y,
             target,
@@ -156,7 +156,7 @@ class ResnetTestCase(unittest.TestCase):
             test_name,
             constants=state_dict_ait,
         )
-        module.run_with_tensors(inputs, [y])
+        module.run_with_tensors(x, [y])
         y = y.permute(0, 3, 1, 2).contiguous()
         torch.testing.assert_close(
             y,
@@ -292,9 +292,91 @@ class ResnetTestCase(unittest.TestCase):
             test_name += "_up"
         if down:
             test_name += "_down"
-        inputs = {"X": x_ait}
+        x = {"X": x_ait}
         if Temb is not None:
-            inputs["Temb"] = temb_ait
+            x["Temb"] = temb_ait
+        module = compile_model(
+            Y,
+            target,
+            "./tmp",
+            test_name,
+            constants=state_dict_ait,
+        )
+        module.run_with_tensors(x, [y])
+        y = y.permute(0, 3, 1, 2).contiguous()
+        torch.testing.assert_close(
+            y,
+            y_pt.to(y.dtype),
+            rtol=tolerance,
+            atol=tolerance,
+            msg=lambda msg: f"{msg}\n\npt ({y_pt.shape}):\n{y_pt}\n\nait ({y.shape}):\n{y}\n\n",
+        )
+
+    def _test_conv1d_block(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: Union[int, Tuple[int, int, int]],
+        n_groups: int = 8,
+        activation: str = "mish",
+        dtype: str = "float16",
+        shape: Tuple[int, int, int] = (1, 64, 32),
+        tolerance: float = 1e-5,
+    ):
+        batch, channels, seq_len = shape
+
+        x = get_random_torch_tensor(shape, dtype=dtype)
+        x_ait = x.clone().permute(0, 2, 1).contiguous().to(x.device, x.dtype)
+
+        op = (
+            resnet_torch.Conv1dBlock(
+                inp_channels=in_channels,
+                out_channels=out_channels,
+                kernel_size=kernel_size,
+                n_groups=n_groups,
+                activation=activation,
+            )
+            .eval()
+            .to(x.device, x.dtype)
+        )
+
+        state_dict_pt = cast(dict[str, torch.Tensor], op.state_dict())
+        state_dict_ait = {}
+        for key, value in state_dict_pt.items():
+            key_ait = key.replace(".", "_")
+            if "conv" in key.lower() and "weight" in key:
+                value = value.permute(0, 2, 1).contiguous()
+            value = value.to(x.device, x.dtype)
+            state_dict_ait[key_ait] = value
+
+        with torch.inference_mode():
+            y_pt = op.forward(x)
+        print(y_pt.shape)
+
+        y = torch.empty_like(y_pt.permute(0, 2, 1).contiguous())
+
+        X = Tensor(
+            shape=[batch, seq_len, channels],
+            dtype=dtype,
+            name="X",
+            is_input=True,
+        )
+
+        op_ait = resnet.Conv1dBlock(
+            inp_channels=in_channels,
+            out_channels=out_channels,
+            kernel_size=kernel_size,
+            n_groups=n_groups,
+            activation=activation,
+            dtype=dtype,
+        )
+        op_ait.name_parameter_tensor()
+        Y = op_ait.forward(X)
+        Y = mark_output(Y, "Y")
+
+        target = detect_target()
+        test_name = f"test_conv1d_block_{dtype}_in_channels{in_channels}_out_channels{out_channels}"
+        inputs = {"X": x_ait}
         module = compile_model(
             Y,
             target,
@@ -303,7 +385,97 @@ class ResnetTestCase(unittest.TestCase):
             constants=state_dict_ait,
         )
         module.run_with_tensors(inputs, [y])
-        y = y.permute(0, 3, 1, 2).contiguous()
+        y = y.permute(0, 2, 1).contiguous()
+        torch.testing.assert_close(
+            y,
+            y_pt.to(y.dtype),
+            rtol=tolerance,
+            atol=tolerance,
+            msg=lambda msg: f"{msg}\n\npt ({y_pt.shape}):\n{y_pt}\n\nait ({y.shape}):\n{y}\n\n",
+        )
+
+    def _test_residual_temporal_block_1d(
+        self,
+        in_channels: int,
+        out_channels: int,
+        embed_dim: int,
+        kernel_size: Union[int, Tuple[int, int, int]],
+        activation: str = "mish",
+        dtype: str = "float16",
+        shape: Tuple[int, int, int] = (1, 64, 32),
+        tolerance: float = 1e-5,
+    ):
+        batch, channels, seq_len = shape
+
+        x = get_random_torch_tensor(shape, dtype=dtype)
+        x_ait = x.clone().permute(0, 2, 1).contiguous().to(x.device, x.dtype)
+        temb = get_random_torch_tensor([1, embed_dim], dtype=dtype)
+        temb_ait = temb.clone()
+
+        op = (
+            resnet_torch.ResidualTemporalBlock1D(
+                inp_channels=in_channels,
+                out_channels=out_channels,
+                embed_dim=embed_dim,
+                kernel_size=kernel_size,
+                activation=activation,
+            )
+            .eval()
+            .to(x.device, x.dtype)
+        )
+
+        state_dict_pt = cast(dict[str, torch.Tensor], op.state_dict())
+        state_dict_ait = {}
+        for key, value in state_dict_pt.items():
+            key_ait = key.replace(".", "_")
+            if "conv" in key.lower() and "weight" in key and value.ndim == 3:
+                value = value.permute(0, 2, 1).contiguous()
+            value = value.to(x.device, x.dtype)
+            state_dict_ait[key_ait] = value
+
+        with torch.inference_mode():
+            y_pt = op.forward(x, temb)
+        print(y_pt.shape)
+
+        y = torch.empty_like(y_pt.permute(0, 2, 1).contiguous())
+
+        X = Tensor(
+            shape=[batch, seq_len, channels],
+            dtype=dtype,
+            name="X",
+            is_input=True,
+        )
+        Temb = Tensor(
+            shape=[1, embed_dim],
+            dtype=dtype,
+            name="Temb",
+            is_input=True,
+        )
+
+        op_ait = resnet.ResidualTemporalBlock1D(
+            inp_channels=in_channels,
+            out_channels=out_channels,
+            embed_dim=embed_dim,
+            kernel_size=kernel_size,
+            activation=activation,
+            dtype=dtype,
+        )
+        op_ait.name_parameter_tensor()
+        Y = op_ait.forward(X, Temb)
+        Y = mark_output(Y, "Y")
+
+        target = detect_target()
+        test_name = f"test_residual_temporal_block_1d_{dtype}_in_channels{in_channels}_out_channels{out_channels}_dim{embed_dim}"
+        inputs = {"X": x_ait, "Temb": temb_ait}
+        module = compile_model(
+            Y,
+            target,
+            "./tmp",
+            test_name,
+            constants=state_dict_ait,
+        )
+        module.run_with_tensors(inputs, [y])
+        y = y.permute(0, 2, 1).contiguous()
         torch.testing.assert_close(
             y,
             y_pt.to(y.dtype),
@@ -428,6 +600,27 @@ class ResnetTestCase(unittest.TestCase):
             conv_2d_out_channels=None,
             tolerance=3e-3,
             dtype="float16",
+        )
+
+    def test_conv1d_block(self):
+        self._test_conv1d_block(
+            in_channels=14,
+            out_channels=8,
+            kernel_size=5,
+            dtype="float16",
+            shape=(1, 14, 32),
+            tolerance=3e-3,
+        )
+
+    def test_residual_temporal_block_1d(self):
+        self._test_residual_temporal_block_1d(
+            in_channels=14,
+            out_channels=8,
+            embed_dim=512,
+            kernel_size=5,
+            dtype="float16",
+            shape=(1, 14, 32),
+            tolerance=3e-3,
         )
 
 

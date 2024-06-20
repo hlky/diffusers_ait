@@ -3,11 +3,15 @@ from typing import cast, Optional, Tuple, Union
 
 from aitemplate.compiler import ops
 
+from aitemplate.compiler.base import IntVarTensor
+
 from aitemplate.frontend import nn, Tensor
 
 from .activations import get_activation
 from .attention_processor import SpatialNorm
 from .downsampling import Downsample2D  # noqa
+
+from .embeddings import SiLU
 from .normalization import AdaGroupNorm
 from .upsampling import Upsample2D  # noqa
 
@@ -418,12 +422,15 @@ class ResnetBlock2D(nn.Module):
 
 # unet_rl.py
 def rearrange_dims(tensor: Tensor) -> Tensor:
-    if len(tensor.shape) == 2:
-        return tensor[:, :, None]
-    if len(tensor.shape) == 3:
-        return tensor[:, :, None, :]
-    elif len(tensor.shape) == 4:
-        return tensor[:, :, 0, :]
+    shape = ops.size()(tensor)
+    if len(shape) == 2:
+        return ops.unsqueeze(1)(tensor)
+    if len(shape) == 3:
+        return ops.unsqueeze(2)(tensor)
+    elif len(shape) == 4:
+        return ops.dynamic_slice()(
+            tensor, start_indices=[0, 0, 0, 0], end_indices=[None, None, 1, None]
+        )
     else:
         raise ValueError(f"`len(tensor)`: {len(tensor)} has to be 2, 3 or 4.")
 
@@ -447,13 +454,18 @@ class Conv1dBlock(nn.Module):
         kernel_size: Union[int, Tuple[int, int]],
         n_groups: int = 8,
         activation: str = "mish",
+        dtype: str = "float16",
     ):
         super().__init__()
 
         self.conv1d = nn.Conv1d(
-            inp_channels, out_channels, kernel_size, padding=kernel_size // 2
+            inp_channels,
+            out_channels,
+            kernel_size,
+            padding=kernel_size // 2,
+            dtype=dtype,
         )
-        self.group_norm = nn.GroupNorm(n_groups, out_channels)
+        self.group_norm = nn.GroupNorm(n_groups, out_channels, dtype=dtype)
         self.mish = get_activation(activation)
 
     def forward(self, inputs: Tensor) -> Tensor:
@@ -462,7 +474,7 @@ class Conv1dBlock(nn.Module):
         intermediate_repr = self.group_norm(intermediate_repr)
         intermediate_repr = rearrange_dims(intermediate_repr)
         output = self.mish(intermediate_repr)
-        return output
+        return ops.squeeze(2)(output)
 
 
 # unet_rl.py
@@ -485,18 +497,21 @@ class ResidualTemporalBlock1D(nn.Module):
         embed_dim: int,
         kernel_size: Union[int, Tuple[int, int]] = 5,
         activation: str = "mish",
+        dtype: str = "float16",
     ):
         super().__init__()
-        self.conv_in = Conv1dBlock(inp_channels, out_channels, kernel_size)
-        self.conv_out = Conv1dBlock(out_channels, out_channels, kernel_size)
+        self.conv_in = Conv1dBlock(inp_channels, out_channels, kernel_size, dtype=dtype)
+        self.conv_out = Conv1dBlock(
+            out_channels, out_channels, kernel_size, dtype=dtype
+        )
 
         self.time_emb_act = get_activation(activation)
-        self.time_emb = nn.Linear(embed_dim, out_channels)
+        self.time_emb = nn.Linear(embed_dim, out_channels, dtype=dtype)
 
         self.residual_conv = (
-            nn.Conv1d(inp_channels, out_channels, 1)
+            nn.Conv1d(inp_channels, out_channels, 1, dtype=dtype)
             if inp_channels != out_channels
-            else nn.Identity()
+            else nn.Identity(dtype=dtype)
         )
 
     def forward(self, inputs: Tensor, t: Tensor) -> Tensor:
@@ -532,46 +547,46 @@ class TemporalConvLayer(nn.Module):
         out_dim: Optional[int] = None,
         dropout: float = 0.0,
         norm_num_groups: int = 32,
+        dtype: str = "float16",
     ):
         super().__init__()
         out_dim = out_dim or in_dim
         self.in_dim = in_dim
         self.out_dim = out_dim
 
+        # NOTE: using SiLU as a module avoids complicated weight mapping due to nn.Sequential ordering
         # conv layers
         self.conv1 = nn.Sequential(
-            nn.GroupNorm(norm_num_groups, in_dim),
-            nn.SiLU(),
-            nn.Conv3d(in_dim, out_dim, (3, 1, 1), padding=(1, 0, 0)),
+            nn.GroupNorm(norm_num_groups, in_dim, dtype=dtype),
+            SiLU(),
+            nn.Conv3d(in_dim, out_dim, (3, 1, 1), padding=(1, 0, 0), dtype=dtype),
         )
         self.conv2 = nn.Sequential(
-            nn.GroupNorm(norm_num_groups, out_dim),
-            nn.SiLU(),
+            nn.GroupNorm(norm_num_groups, out_dim, dtype=dtype),
+            SiLU(),
             nn.Dropout(dropout),
-            nn.Conv3d(out_dim, in_dim, (3, 1, 1), padding=(1, 0, 0)),
+            nn.Conv3d(out_dim, in_dim, (3, 1, 1), padding=(1, 0, 0), dtype=dtype),
         )
         self.conv3 = nn.Sequential(
-            nn.GroupNorm(norm_num_groups, out_dim),
-            nn.SiLU(),
+            nn.GroupNorm(norm_num_groups, out_dim, dtype=dtype),
+            SiLU(),
             nn.Dropout(dropout),
-            nn.Conv3d(out_dim, in_dim, (3, 1, 1), padding=(1, 0, 0)),
+            nn.Conv3d(out_dim, in_dim, (3, 1, 1), padding=(1, 0, 0), dtype=dtype),
         )
         self.conv4 = nn.Sequential(
-            nn.GroupNorm(norm_num_groups, out_dim),
-            nn.SiLU(),
+            nn.GroupNorm(norm_num_groups, out_dim, dtype=dtype),
+            SiLU(),
             nn.Dropout(dropout),
-            nn.Conv3d(out_dim, in_dim, (3, 1, 1), padding=(1, 0, 0)),
+            nn.Conv3d(out_dim, in_dim, (3, 1, 1), padding=(1, 0, 0), dtype=dtype),
         )
 
-        # zero out the last layer params,so the conv block is identity
-        nn.init.zeros_(self.conv4[-1].weight)
-        nn.init.zeros_(self.conv4[-1].bias)
-
     def forward(self, hidden_states: Tensor, num_frames: int = 1) -> Tensor:
-        hidden_states = (
-            hidden_states[None, :]
-            .reshape((-1, num_frames) + hidden_states.shape[1:])
-            .permute(0, 2, 1, 3, 4)
+        shape = ops.size()(hidden_states)
+        hidden_states = ops.permute()(
+            ops.reshape()(
+                ops.unsqueeze(0)(hidden_states), shape=[-1, num_frames] + shape[1:]
+            ),
+            [0, 2, 1, 3, 4],
         )
 
         identity = hidden_states
@@ -581,10 +596,11 @@ class TemporalConvLayer(nn.Module):
         hidden_states = self.conv4(hidden_states)
 
         hidden_states = identity + hidden_states
+        shape = ops.size()(hidden_states)
 
-        hidden_states = hidden_states.permute(0, 2, 1, 3, 4).reshape(
-            (hidden_states.shape[0] * hidden_states.shape[2], -1)
-            + hidden_states.shape[3:]
+        hidden_states = ops.reshape()(
+            ops.permute()(hidden_states, [0, 2, 1, 3, 4]),
+            shape=[shape[0] * shape[2], -1] + shape[3:],
         )
         return hidden_states
 
@@ -607,6 +623,7 @@ class TemporalResnetBlock(nn.Module):
         out_channels: Optional[int] = None,
         temb_channels: int = 512,
         eps: float = 1e-6,
+        dtype: str = "float16",
     ):
         super().__init__()
         self.in_channels = in_channels
@@ -617,23 +634,23 @@ class TemporalResnetBlock(nn.Module):
         padding = [k // 2 for k in kernel_size]
 
         self.norm1 = nn.GroupNorm(
-            num_groups=32, num_channels=in_channels, eps=eps, affine=True
+            num_groups=32, num_channels=in_channels, eps=eps, affine=True, dtype=dtype
         )
         self.conv1 = nn.Conv3d(
             in_channels,
             out_channels,
             kernel_size=kernel_size,
-            stride=1,
             padding=padding,
+            dtype=dtype,
         )
 
         if temb_channels is not None:
-            self.time_emb_proj = nn.Linear(temb_channels, out_channels)
+            self.time_emb_proj = nn.Linear(temb_channels, out_channels, dtype=dtype)
         else:
             self.time_emb_proj = None
 
         self.norm2 = nn.GroupNorm(
-            num_groups=32, num_channels=out_channels, eps=eps, affine=True
+            num_groups=32, num_channels=out_channels, eps=eps, affine=True, dtype=dtype
         )
 
         self.dropout = nn.Dropout(0.0)
@@ -641,8 +658,8 @@ class TemporalResnetBlock(nn.Module):
             out_channels,
             out_channels,
             kernel_size=kernel_size,
-            stride=1,
             padding=padding,
+            dtype=dtype,
         )
 
         self.nonlinearity = get_activation("silu")
@@ -652,11 +669,7 @@ class TemporalResnetBlock(nn.Module):
         self.conv_shortcut = None
         if self.use_in_shortcut:
             self.conv_shortcut = nn.Conv3d(
-                in_channels,
-                out_channels,
-                kernel_size=1,
-                stride=1,
-                padding=0,
+                in_channels, out_channels, kernel_size=1, dtype=dtype
             )
 
     def forward(self, input_tensor: Tensor, temb: Tensor) -> Tensor:
@@ -669,7 +682,8 @@ class TemporalResnetBlock(nn.Module):
         if self.time_emb_proj is not None:
             temb = self.nonlinearity(temb)
             temb = self.time_emb_proj(temb)[:, :, :, None, None]
-            temb = temb.permute(0, 2, 1, 3, 4)
+            temb = ops.unsqueeze(3)(ops.unsqueeze(3)(temb))
+            temb = ops.permute()(temb, [0, 2, 1, 3, 4])
             hidden_states = hidden_states + temb
 
         hidden_states = self.norm2(hidden_states)
@@ -714,6 +728,7 @@ class SpatioTemporalResBlock(nn.Module):
         merge_factor: float = 0.5,
         merge_strategy="learned_with_images",
         switch_spatial_to_temporal_mix: bool = False,
+        dtype: str = "float16",
     ):
         super().__init__()
 
@@ -722,6 +737,7 @@ class SpatioTemporalResBlock(nn.Module):
             out_channels=out_channels,
             temb_channels=temb_channels,
             eps=eps,
+            dtype=dtype,
         )
 
         self.temporal_res_block = TemporalResnetBlock(
@@ -729,6 +745,7 @@ class SpatioTemporalResBlock(nn.Module):
             out_channels=out_channels if out_channels is not None else in_channels,
             temb_channels=temb_channels,
             eps=temporal_eps if temporal_eps is not None else eps,
+            dtype=dtype,
         )
 
         self.time_mixer = AlphaBlender(
@@ -743,25 +760,23 @@ class SpatioTemporalResBlock(nn.Module):
         temb: Optional[Tensor] = None,
         image_only_indicator: Optional[Tensor] = None,
     ):
-        num_frames = image_only_indicator.shape[-1]
+        num_frames = ops.size()(image_only_indicator, dim=-1)
         hidden_states = self.spatial_res_block(hidden_states, temb)
 
-        batch_frames, channels, height, width = hidden_states.shape
+        batch_frames, height, width, channels = ops.size()(hidden_states)
         batch_size = batch_frames // num_frames
 
-        hidden_states_mix = (
-            hidden_states[None, :]
-            .reshape(batch_size, num_frames, channels, height, width)
-            .permute(0, 2, 1, 3, 4)
+        hidden_states_mix = ops.reshape()(
+            ops.unsqueeze(0)(hidden_states),
+            [batch_size, num_frames, height, width, channels],
         )
-        hidden_states = (
-            hidden_states[None, :]
-            .reshape(batch_size, num_frames, channels, height, width)
-            .permute(0, 2, 1, 3, 4)
+        hidden_states = ops.reshape()(
+            ops.unsqueeze(0)(hidden_states),
+            [batch_size, num_frames, height, width, channels],
         )
 
         if temb is not None:
-            temb = temb.reshape(batch_size, num_frames, -1)
+            temb = ops.reshape()(temb, [batch_size, num_frames, -1])
 
         hidden_states = self.temporal_res_block(hidden_states, temb)
         hidden_states = self.time_mixer(
@@ -770,9 +785,10 @@ class SpatioTemporalResBlock(nn.Module):
             image_only_indicator=image_only_indicator,
         )
 
-        hidden_states = hidden_states.permute(0, 2, 1, 3, 4).reshape(
-            batch_frames, channels, height, width
-        )
+        hidden_states = ops.reshape()(batch_frames, height, width, channels)
+        # hidden_states = hidden_states.permute(0, 2, 1, 3, 4).reshape(
+        #     batch_frames, channels, height, width
+        # )
         return hidden_states
 
 

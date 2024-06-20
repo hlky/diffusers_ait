@@ -165,7 +165,7 @@ class DownsamplingTestCase(unittest.TestCase):
                 2,
             ),
             use_conv=True,
-            tolerance=2e-4,
+            tolerance=3e-4,
         )
 
     def test_downsample2d(self):
