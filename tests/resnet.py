@@ -564,6 +564,96 @@ class ResnetTestCase(unittest.TestCase):
             msg=lambda msg: f"{msg}\n\npt ({y_pt.shape}):\n{y_pt}\n\nait ({y.shape}):\n{y}\n\n",
         )
 
+    def _test_temporal_resnet_block(
+        self,
+        shape: List[int],
+        temb_shape: List[int],
+        in_channels: int,
+        out_channels: Optional[int] = None,
+        temb_channels: int = 512,
+        eps: float = 1e-6,
+        dtype: str = "float16",
+        tolerance: float = 1e-5,
+    ):
+        batch, channels, depth, height, width = shape
+        x = get_random_torch_tensor(shape, dtype=dtype)
+        temb = get_random_torch_tensor(temb_shape, dtype=dtype)
+        x_ait = x.clone().permute(0, 2, 3, 4, 1).contiguous().to(x.device, x.dtype)
+        temb_ait = temb.clone().to(temb.device, temb.dtype)
+
+        op = (
+            resnet_torch.TemporalResnetBlock(
+                in_channels=in_channels,
+                out_channels=out_channels,
+                temb_channels=temb_channels,
+                eps=eps,
+            )
+            .eval()
+            .to(x.device, x.dtype)
+        )
+
+        state_dict_pt = cast(dict[str, torch.Tensor], op.state_dict())
+        state_dict_ait = {}
+        for key, value in state_dict_pt.items():
+            key_ait = key.replace(".", "_")
+            if "weight" in key and value.ndim == 5:
+                value = value.permute(0, 2, 3, 4, 1).contiguous()
+            value = value.to(x.device, x.dtype)
+            state_dict_ait[key_ait] = value
+
+        with torch.inference_mode():
+            y_pt = op.forward(x, temb)
+
+        y = torch.empty_like(y_pt.permute(0, 2, 3, 4, 1).contiguous()).to(
+            x.device, x.dtype
+        )
+
+        X = Tensor(
+            shape=[batch, depth, height, width, channels],
+            dtype=dtype,
+            name="X",
+            is_input=True,
+        )
+        Temb = Tensor(
+            shape=temb_shape,
+            dtype=dtype,
+            name="Temb",
+            is_input=True,
+        )
+
+        op_ait = resnet.TemporalResnetBlock(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            temb_channels=temb_channels,
+            eps=eps,
+            dtype=dtype,
+        )
+        op_ait.name_parameter_tensor()
+        Y = op_ait.forward(X, Temb)
+        Y = mark_output(Y, "Y")
+
+        target = detect_target()
+        test_name = (
+            f"test_temporal_resnet_block_{dtype}_in_dim{in_channels}_frames{depth}"
+        )
+        inputs_dict = {"X": x_ait, "Temb": temb_ait}
+        module = compile_model(
+            Y,
+            target,
+            "./tmp",
+            test_name,
+            constants=state_dict_ait,
+        )
+        module.run_with_tensors(inputs_dict, [y])
+        y = y.permute(0, 4, 1, 2, 3).contiguous()
+        torch.testing.assert_close(
+            y,
+            y_pt.to(y.dtype),
+            rtol=tolerance,
+            atol=tolerance,
+            msg=lambda msg: f"{msg}\n\npt ({y_pt.shape}):\n{y_pt}\n\nait ({y.shape}):\n{y}\n\n",
+        )
+
     def test_resnet_block_cond_norm_2d(self):
         self._test_resnet_block_cond_norm_2d(
             shape=[1, 1280, 64, 64],
@@ -717,6 +807,16 @@ class ResnetTestCase(unittest.TestCase):
             dtype="float16",
             num_frames=2,
             tolerance=1e-3,
+        )
+
+    def test_temporal_resnet_block(self):
+        self._test_temporal_resnet_block(
+            shape=[1, 32, 4, 48, 48],
+            temb_shape=[1, 4, 512],
+            in_channels=32,
+            temb_channels=512,
+            dtype="float16",
+            tolerance=3e-3,
         )
 
 

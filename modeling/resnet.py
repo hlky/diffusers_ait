@@ -676,12 +676,10 @@ class TemporalResnetBlock(nn.Module):
         hidden_states = self.norm1(hidden_states)
         hidden_states = self.nonlinearity(hidden_states)
         hidden_states = self.conv1(hidden_states)
-
         if self.time_emb_proj is not None:
             temb = self.nonlinearity(temb)
-            temb = self.time_emb_proj(temb)[:, :, :, None, None]
-            temb = ops.unsqueeze(3)(ops.unsqueeze(3)(temb))
-            temb = ops.permute()(temb, [0, 2, 1, 3, 4])
+            temb = self.time_emb_proj(temb)
+            temb = ops.unsqueeze(2)(ops.unsqueeze(2)(temb))
             hidden_states = hidden_states + temb
 
         hidden_states = self.norm2(hidden_states)
