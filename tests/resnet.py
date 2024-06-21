@@ -351,7 +351,6 @@ class ResnetTestCase(unittest.TestCase):
 
         with torch.inference_mode():
             y_pt = op.forward(x)
-        print(y_pt.shape)
 
         y = torch.empty_like(y_pt.permute(0, 2, 1).contiguous())
 
@@ -376,7 +375,7 @@ class ResnetTestCase(unittest.TestCase):
 
         target = detect_target()
         test_name = f"test_conv1d_block_{dtype}_in_channels{in_channels}_out_channels{out_channels}"
-        inputs = {"X": x_ait}
+        x = {"X": x_ait}
         module = compile_model(
             Y,
             target,
@@ -384,7 +383,7 @@ class ResnetTestCase(unittest.TestCase):
             test_name,
             constants=state_dict_ait,
         )
-        module.run_with_tensors(inputs, [y])
+        module.run_with_tensors(x, [y])
         y = y.permute(0, 2, 1).contiguous()
         torch.testing.assert_close(
             y,
@@ -435,7 +434,6 @@ class ResnetTestCase(unittest.TestCase):
 
         with torch.inference_mode():
             y_pt = op.forward(x, temb)
-        print(y_pt.shape)
 
         y = torch.empty_like(y_pt.permute(0, 2, 1).contiguous())
 
@@ -466,7 +464,7 @@ class ResnetTestCase(unittest.TestCase):
 
         target = detect_target()
         test_name = f"test_residual_temporal_block_1d_{dtype}_in_channels{in_channels}_out_channels{out_channels}_dim{embed_dim}"
-        inputs = {"X": x_ait, "Temb": temb_ait}
+        x = {"X": x_ait, "Temb": temb_ait}
         module = compile_model(
             Y,
             target,
@@ -474,8 +472,90 @@ class ResnetTestCase(unittest.TestCase):
             test_name,
             constants=state_dict_ait,
         )
-        module.run_with_tensors(inputs, [y])
+        module.run_with_tensors(x, [y])
         y = y.permute(0, 2, 1).contiguous()
+        torch.testing.assert_close(
+            y,
+            y_pt.to(y.dtype),
+            rtol=tolerance,
+            atol=tolerance,
+            msg=lambda msg: f"{msg}\n\npt ({y_pt.shape}):\n{y_pt}\n\nait ({y.shape}):\n{y}\n\n",
+        )
+
+    def _test_temporal_conv_layer(
+        self,
+        shape: List[int],
+        in_dim: int,
+        out_dim: Optional[int] = None,
+        dropout: float = 0.0,
+        norm_num_groups: int = 32,
+        dtype: str = "float16",
+        num_frames: int = 1,
+        tolerance: float = 1e-5,
+    ):
+        batch, channels, height, width = shape
+        x = get_random_torch_tensor(shape, dtype=dtype)
+        x_ait = x.clone().permute(0, 2, 3, 1).contiguous().to(x.device, x.dtype)
+
+        op = (
+            resnet_torch.TemporalConvLayer(
+                in_dim=in_dim,
+                out_dim=out_dim,
+                dropout=dropout,
+                norm_num_groups=norm_num_groups,
+            )
+            .eval()
+            .to(x.device, x.dtype)
+        )
+
+        state_dict_pt = cast(dict[str, torch.Tensor], op.state_dict())
+        state_dict_ait = {}
+        for key, value in state_dict_pt.items():
+            key_ait = key.replace(".", "_")
+            if "conv" in key.lower() and "weight" in key and value.ndim == 4:
+                value = value.permute(0, 2, 3, 1).contiguous()
+            value = value.to(x.device, x.dtype)
+            state_dict_ait[key_ait] = value
+
+        with torch.inference_mode():
+            y_pt = op.forward(x, num_frames)
+
+        y = torch.empty_like(y_pt.permute(0, 2, 3, 1).contiguous()).to(
+            x.device, x.dtype
+        )
+
+        X = Tensor(
+            shape=[batch, height, width, channels],
+            dtype=dtype,
+            name="X",
+            is_input=True,
+        )
+
+        op_ait = resnet.TemporalConvLayer(
+            in_dim=in_dim,
+            out_dim=out_dim,
+            dropout=dropout,
+            norm_num_groups=norm_num_groups,
+            dtype=dtype,
+        )
+        op_ait.name_parameter_tensor()
+        Y = op_ait.forward(X, num_frames)
+        Y = mark_output(Y, "Y")
+
+        target = detect_target()
+        test_name = (
+            f"test_temporal_conv_layer_{dtype}_in_dim{in_dim}_frames{num_frames}"
+        )
+        inputs_dict = {"X": x_ait}
+        module = compile_model(
+            Y,
+            target,
+            "./tmp",
+            test_name,
+            constants=state_dict_ait,
+        )
+        module.run_with_tensors(inputs_dict, [y])
+        y = y.permute(0, 3, 1, 2).contiguous()
         torch.testing.assert_close(
             y,
             y_pt.to(y.dtype),
@@ -621,6 +701,22 @@ class ResnetTestCase(unittest.TestCase):
             dtype="float16",
             shape=(1, 14, 32),
             tolerance=3e-3,
+        )
+
+    def test_temporal_conv_layer(self):
+        self._test_temporal_conv_layer(
+            shape=[1, 320, 64, 64],
+            in_dim=320,
+            dtype="float16",
+            num_frames=1,
+            tolerance=1e-3,
+        )
+        self._test_temporal_conv_layer(
+            shape=[2, 320, 64, 64],
+            in_dim=320,
+            dtype="float16",
+            num_frames=2,
+            tolerance=1e-3,
         )
 
 

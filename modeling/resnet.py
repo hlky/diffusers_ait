@@ -582,12 +582,11 @@ class TemporalConvLayer(nn.Module):
 
     def forward(self, hidden_states: Tensor, num_frames: int = 1) -> Tensor:
         shape = ops.size()(hidden_states)
-        hidden_states = ops.permute()(
-            ops.reshape()(
-                ops.unsqueeze(0)(hidden_states), shape=[-1, num_frames] + shape[1:]
-            ),
-            [0, 2, 1, 3, 4],
+        hidden_states = ops.reshape()(
+            ops.unsqueeze(0)(hidden_states), shape=[-1, num_frames] + shape[1:]
         )
+
+        print(get_shape(hidden_states))
 
         identity = hidden_states
         hidden_states = self.conv1(hidden_states)
@@ -597,10 +596,9 @@ class TemporalConvLayer(nn.Module):
 
         hidden_states = identity + hidden_states
         shape = ops.size()(hidden_states)
-
+        print(get_shape(hidden_states))
         hidden_states = ops.reshape()(
-            ops.permute()(hidden_states, [0, 2, 1, 3, 4]),
-            shape=[shape[0] * shape[2], -1] + shape[3:],
+            hidden_states, shape=[shape[0] * shape[1], shape[2], shape[3], shape[4]]
         )
         return hidden_states
 
