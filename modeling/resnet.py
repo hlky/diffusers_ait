@@ -586,8 +586,6 @@ class TemporalConvLayer(nn.Module):
             ops.unsqueeze(0)(hidden_states), shape=[-1, num_frames] + shape[1:]
         )
 
-        print(get_shape(hidden_states))
-
         identity = hidden_states
         hidden_states = self.conv1(hidden_states)
         hidden_states = self.conv2(hidden_states)
@@ -596,7 +594,6 @@ class TemporalConvLayer(nn.Module):
 
         hidden_states = identity + hidden_states
         shape = ops.size()(hidden_states)
-        print(get_shape(hidden_states))
         hidden_states = ops.reshape()(
             hidden_states, shape=[shape[0] * shape[1], shape[2], shape[3], shape[4]]
         )
@@ -807,8 +804,10 @@ class AlphaBlender(nn.Module):
         alpha: float,
         merge_strategy: str = "learned_with_images",
         switch_spatial_to_temporal_mix: bool = False,
+        dtype: str = "float16",
     ):
         super().__init__()
+        self.dtype = dtype
         self.merge_strategy = merge_strategy
         self.switch_spatial_to_temporal_mix = (
             switch_spatial_to_temporal_mix  # For TemporalVAE
@@ -818,13 +817,15 @@ class AlphaBlender(nn.Module):
             raise ValueError(f"merge_strategy needs to be in {self.strategies}")
 
         if self.merge_strategy == "fixed":
-            self.register_buffer("mix_factor", Tensor(shape=[1], value=alpha))
+            self.mix_factor = Tensor(
+                shape=[1], value=alpha, dtype=dtype, name="mix_factor"
+            )
         elif (
             self.merge_strategy == "learned"
             or self.merge_strategy == "learned_with_images"
         ):
-            self.register_parameter(
-                "mix_factor", nn.Parameter(shape=[1], name="mix_factor", value=alpha)
+            self.mix_factor = nn.Parameter(
+                shape=[1], name="mix_factor", value=alpha, dtype=dtype
             )
         else:
             raise ValueError(f"Unknown merge strategy {self.merge_strategy}")
@@ -841,19 +842,22 @@ class AlphaBlender(nn.Module):
                 raise ValueError(
                     "Please provide image_only_indicator to use learned_with_images merge strategy"
                 )
-
+            batch = ops.size()(image_only_indicator, dim=1)
             alpha = ops.where()(
                 image_only_indicator,
-                Tensor([1, 1], value=1.0),
-                ops.unsqueeze(-1)(
-                    ops.sigmoid(cast(nn.Parameter, self.mix_factor).tensor())
+                1.0,
+                ops.expand()(
+                    ops.unsqueeze(-1)(
+                        ops.sigmoid(cast(nn.Parameter, self.mix_factor).tensor())
+                    ),
+                    [-1, batch],
                 ),
             )
 
-            # (batch, channel, frames, height, width)
+            # (batch, frames, height, width, channel)
             if ndims == 5:
                 alpha = ops.unsqueeze(-1)(
-                    ops.unsqueeze(-1)(ops.unsqueeze(1)(alpha))
+                    ops.unsqueeze(-1)(ops.unsqueeze(-1)(alpha))
                 )  # alpha[:, None, :, None, None]
             # (batch*frames, height*width, channels)
             elif ndims == 3:

@@ -654,6 +654,132 @@ class ResnetTestCase(unittest.TestCase):
             msg=lambda msg: f"{msg}\n\npt ({y_pt.shape}):\n{y_pt}\n\nait ({y.shape}):\n{y}\n\n",
         )
 
+    def _test_alpha_blender(
+        self,
+        shape: List[int],
+        alpha: float,
+        merge_strategy: str = "learned_with_images",
+        switch_spatial_to_temporal_mix: bool = False,
+        dtype: str = "float16",
+        tolerance: float = 1e-5,
+    ):
+        if len(shape) == 5:
+            batch, channels, depth, height, width = shape
+        x_spatial = get_random_torch_tensor(shape, dtype=dtype)
+        x_temporal = get_random_torch_tensor(shape, dtype=dtype)
+        image_only_indicator = (
+            torch.randint(
+                0,
+                1,
+                [1, shape[0]] if len(shape) != 5 else [shape[0], depth],
+                dtype=torch.bool,
+                device=x_spatial.device,
+            )
+            if merge_strategy == "learned_with_images"
+            else None
+        )
+        x_spatial_ait = x_spatial.clone().to(x_spatial.device, x_spatial.dtype)
+        x_temporal_ait = x_temporal.clone().to(x_temporal.device, x_temporal.dtype)
+        if len(shape) == 5:
+            x_spatial_ait = x_spatial_ait.permute(0, 2, 3, 4, 1).contiguous()
+            x_temporal_ait = x_temporal_ait.permute(0, 2, 3, 4, 1).contiguous()
+        image_only_indicator_ait = (
+            image_only_indicator.clone().to(
+                image_only_indicator.device, image_only_indicator.dtype
+            )
+            if image_only_indicator is not None
+            else None
+        )
+
+        op = (
+            resnet_torch.AlphaBlender(
+                alpha=alpha,
+                merge_strategy=merge_strategy,
+                switch_spatial_to_temporal_mix=switch_spatial_to_temporal_mix,
+            )
+            .eval()
+            .to(x_spatial.device, x_spatial.dtype)
+        )
+
+        state_dict_pt = cast(dict[str, torch.Tensor], op.state_dict())
+        state_dict_ait = {}
+        for key, value in state_dict_pt.items():
+            key_ait = key.replace(".", "_")
+            if "weight" in key and value.ndim == 5:
+                value = value.permute(0, 2, 3, 4, 1).contiguous()
+            value = value.to(x_spatial.device, x_spatial.dtype)
+            state_dict_ait[key_ait] = value
+
+        if merge_strategy == "fixed":
+            state_dict_ait["mix_factor"] = torch.tensor(
+                [alpha], dtype=x_spatial.dtype, device=x_spatial.device
+            )
+
+        with torch.no_grad():
+            y_pt = op.forward(x_spatial, x_temporal, image_only_indicator)
+
+        y = torch.empty_like(y_pt).to(x_spatial.device, x_spatial.dtype)
+        if len(shape) == 5:
+            y = y.permute(0, 2, 3, 4, 1).contiguous()
+
+        if len(shape) == 5:
+            shape = [batch, depth, height, width, channels]
+        X_spatial = Tensor(
+            shape=shape,
+            dtype=dtype,
+            name="X_spatial",
+            is_input=True,
+        )
+        X_temporal = Tensor(
+            shape=shape,
+            dtype=dtype,
+            name="X_temporal",
+            is_input=True,
+        )
+        Image_only_indicator = (
+            Tensor(
+                shape=[1, shape[0]] if len(shape) != 5 else [shape[0], depth],
+                dtype="bool",
+                name="Image_only_indicator",
+                is_input=True,
+            )
+            if image_only_indicator is not None
+            else None
+        )
+
+        op_ait = resnet.AlphaBlender(
+            alpha=alpha,
+            merge_strategy=merge_strategy,
+            switch_spatial_to_temporal_mix=switch_spatial_to_temporal_mix,
+            dtype=dtype,
+        )
+        op_ait.name_parameter_tensor()
+        Y = op_ait.forward(X_spatial, X_temporal, Image_only_indicator)
+        Y = mark_output(Y, "Y")
+
+        target = detect_target()
+        test_name = f"test_alpha_blender_{dtype}_merge_strategy_{merge_strategy}"
+        inputs_dict = {"X_spatial": x_spatial_ait, "X_temporal": x_temporal_ait}
+        if Image_only_indicator is not None:
+            inputs_dict["Image_only_indicator"] = image_only_indicator_ait
+        module = compile_model(
+            Y,
+            target,
+            "./tmp",
+            test_name,
+            constants=state_dict_ait,
+        )
+        module.run_with_tensors(inputs_dict, [y])
+        if len(shape) == 5:
+            y = y.permute(0, 4, 1, 2, 3).contiguous()
+        torch.testing.assert_close(
+            y,
+            y_pt.to(y.dtype),
+            rtol=tolerance,
+            atol=tolerance,
+            msg=lambda msg: f"{msg}\n\npt ({y_pt.shape}):\n{y_pt}\n\nait ({y.shape}):\n{y}\n\n",
+        )
+
     def test_resnet_block_cond_norm_2d(self):
         self._test_resnet_block_cond_norm_2d(
             shape=[1, 1280, 64, 64],
@@ -818,6 +944,19 @@ class ResnetTestCase(unittest.TestCase):
             dtype="float16",
             tolerance=3e-3,
         )
+
+    def test_alpha_blender_fixed(self):
+        shapes = [[1, 64, 16, 32, 32], [16, 1024, 64]]
+        merge_strategies = ["fixed", "learned", "learned_with_images"]
+        for shape in shapes:
+            for merge_strategy in merge_strategies:
+                self._test_alpha_blender(
+                    shape=shape,
+                    alpha=0.5,
+                    merge_strategy=merge_strategy,
+                    dtype="float16",
+                    tolerance=1e-3,
+                )
 
 
 if __name__ == "__main__":
