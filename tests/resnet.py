@@ -575,7 +575,7 @@ class ResnetTestCase(unittest.TestCase):
         dtype: str = "float16",
         tolerance: float = 1e-5,
     ):
-        batch, channels, depth, height, width = shape
+        batch, channels, frames, height, width = shape
         x = get_random_torch_tensor(shape, dtype=dtype)
         temb = get_random_torch_tensor(temb_shape, dtype=dtype)
         x_ait = x.clone().permute(0, 2, 3, 4, 1).contiguous().to(x.device, x.dtype)
@@ -609,7 +609,7 @@ class ResnetTestCase(unittest.TestCase):
         )
 
         X = Tensor(
-            shape=[batch, depth, height, width, channels],
+            shape=[batch, frames, height, width, channels],
             dtype=dtype,
             name="X",
             is_input=True,
@@ -634,7 +634,7 @@ class ResnetTestCase(unittest.TestCase):
 
         target = detect_target()
         test_name = (
-            f"test_temporal_resnet_block_{dtype}_in_dim{in_channels}_frames{depth}"
+            f"test_temporal_resnet_block_{dtype}_in_dim{in_channels}_frames{frames}"
         )
         inputs_dict = {"X": x_ait, "Temb": temb_ait}
         module = compile_model(
@@ -664,14 +664,14 @@ class ResnetTestCase(unittest.TestCase):
         tolerance: float = 1e-5,
     ):
         if len(shape) == 5:
-            batch, channels, depth, height, width = shape
+            batch, channels, frames, height, width = shape
         x_spatial = get_random_torch_tensor(shape, dtype=dtype)
         x_temporal = get_random_torch_tensor(shape, dtype=dtype)
         image_only_indicator = (
             torch.randint(
                 0,
                 1,
-                [1, shape[0]] if len(shape) != 5 else [shape[0], depth],
+                [1, shape[0]] if len(shape) != 5 else [shape[0], frames],
                 dtype=torch.bool,
                 device=x_spatial.device,
             )
@@ -715,7 +715,7 @@ class ResnetTestCase(unittest.TestCase):
                 [alpha], dtype=x_spatial.dtype, device=x_spatial.device
             )
 
-        with torch.no_grad():
+        with torch.inference_mode():
             y_pt = op.forward(x_spatial, x_temporal, image_only_indicator)
 
         y = torch.empty_like(y_pt).to(x_spatial.device, x_spatial.dtype)
@@ -723,7 +723,7 @@ class ResnetTestCase(unittest.TestCase):
             y = y.permute(0, 2, 3, 4, 1).contiguous()
 
         if len(shape) == 5:
-            shape = [batch, depth, height, width, channels]
+            shape = [batch, frames, height, width, channels]
         X_spatial = Tensor(
             shape=shape,
             dtype=dtype,
@@ -738,7 +738,7 @@ class ResnetTestCase(unittest.TestCase):
         )
         Image_only_indicator = (
             Tensor(
-                shape=[1, shape[0]] if len(shape) != 5 else [shape[0], depth],
+                shape=[1, shape[0]] if len(shape) != 5 else [shape[0], frames],
                 dtype="bool",
                 name="Image_only_indicator",
                 is_input=True,
@@ -772,6 +772,135 @@ class ResnetTestCase(unittest.TestCase):
         module.run_with_tensors(inputs_dict, [y])
         if len(shape) == 5:
             y = y.permute(0, 4, 1, 2, 3).contiguous()
+        torch.testing.assert_close(
+            y,
+            y_pt.to(y.dtype),
+            rtol=tolerance,
+            atol=tolerance,
+            msg=lambda msg: f"{msg}\n\npt ({y_pt.shape}):\n{y_pt}\n\nait ({y.shape}):\n{y}\n\n",
+        )
+
+    def _test_spatiotemporal_res_block(
+        self,
+        shape: List[int],
+        num_frames: int,
+        in_channels: int,
+        out_channels: Optional[int] = None,
+        temb_channels: int = 512,
+        eps: float = 1e-6,
+        temporal_eps: Optional[float] = None,
+        merge_factor: float = 0.5,
+        merge_strategy: str = "learned_with_images",
+        switch_spatial_to_temporal_mix: bool = False,
+        dtype: str = "float16",
+        tolerance: float = 1e-5,
+    ):
+        batch_frames, channels, height, width = shape
+        batch = batch_frames // num_frames
+        temb_shape = [batch, num_frames, temb_channels]
+        x = get_random_torch_tensor(shape, dtype=dtype)
+        # temb = get_random_torch_tensor(temb_shape, dtype=dtype)
+        image_only_indicator = torch.randint(
+            0,
+            1,
+            [batch, num_frames],
+            dtype=torch.bool,
+            device=x.device,
+        )
+        x_ait = x.clone().permute(0, 2, 3, 1).contiguous().to(x.device, x.dtype)
+        # temb_ait = temb.clone().to(temb.device, temb.dtype)
+        image_only_indicator_ait = image_only_indicator.clone().to(
+            image_only_indicator.device, image_only_indicator.dtype
+        )
+
+        op = (
+            resnet_torch.SpatioTemporalResBlock(
+                in_channels=in_channels,
+                out_channels=out_channels,
+                temb_channels=temb_channels,
+                eps=eps,
+                temporal_eps=temporal_eps,
+                merge_factor=merge_factor,
+                merge_strategy=merge_strategy,
+                switch_spatial_to_temporal_mix=switch_spatial_to_temporal_mix,
+            )
+            .eval()
+            .to(x.device, x.dtype)
+        )
+
+        state_dict_pt = cast(dict[str, torch.Tensor], op.state_dict())
+        state_dict_ait = {}
+        for key, value in state_dict_pt.items():
+            key_ait = key.replace(".", "_")
+            if "weight" in key and value.ndim == 4:
+                value = value.permute(0, 2, 3, 1).contiguous()
+            if "weight" in key and value.ndim == 5:
+                value = value.permute(0, 2, 3, 4, 1).contiguous()
+            value = value.to(x.device, x.dtype)
+            state_dict_ait[key_ait] = value
+
+        if merge_strategy == "fixed":
+            state_dict_ait["mix_factor"] = torch.tensor(
+                [merge_factor], dtype=x.dtype, device=x.device
+            )
+
+        with torch.inference_mode():
+            y_pt = op.forward(x, None, image_only_indicator)
+        print(y_pt.shape)
+
+        y = torch.empty_like(y_pt.permute(0, 2, 3, 1).contiguous()).to(
+            x.device, x.dtype
+        )
+
+        X = Tensor(
+            shape=[batch_frames, height, width, channels],
+            dtype=dtype,
+            name="X",
+            is_input=True,
+        )
+        # Temb = Tensor(
+        #     shape=temb_shape,
+        #     dtype=dtype,
+        #     name="Temb",
+        #     is_input=True,
+        # )
+        Image_only_indicator = Tensor(
+            shape=[batch, num_frames],
+            dtype="bool",
+            name="Image_only_indicator",
+            is_input=True,
+        )
+
+        op_ait = resnet.SpatioTemporalResBlock(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            temb_channels=temb_channels,
+            eps=eps,
+            temporal_eps=temporal_eps,
+            merge_factor=merge_factor,
+            merge_strategy=merge_strategy,
+            switch_spatial_to_temporal_mix=switch_spatial_to_temporal_mix,
+            dtype=dtype,
+        )
+        op_ait.name_parameter_tensor()
+        Y = op_ait.forward(X, None, Image_only_indicator)
+        Y = mark_output(Y, "Y")
+
+        target = detect_target()
+        test_name = (
+            f"test_spatiotemporal_res_block_{dtype}_merge_strategy_{merge_strategy}"
+        )
+        inputs_dict = {"X": x_ait}
+        module = compile_model(
+            Y,
+            target,
+            "./tmp",
+            test_name,
+            constants=state_dict_ait,
+        )
+        module.run_with_tensors(inputs_dict, [y])
+        if y.ndim == 4:
+            y = y.permute(0, 3, 1, 2).contiguous()
         torch.testing.assert_close(
             y,
             y_pt.to(y.dtype),
@@ -957,6 +1086,19 @@ class ResnetTestCase(unittest.TestCase):
                     dtype="float16",
                     tolerance=1e-3,
                 )
+
+    def test_spatiotemporal_res_block(self):
+        # TODO: more cases
+        self._test_spatiotemporal_res_block(
+            shape=[16, 64, 32, 32],
+            num_frames=16,
+            in_channels=64,
+            temb_channels=None,
+            merge_strategy="learned",
+            switch_spatial_to_temporal_mix=True,
+            dtype="float16",
+            tolerance=3e-3,
+        )
 
 
 if __name__ == "__main__":
