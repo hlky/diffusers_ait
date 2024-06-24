@@ -776,12 +776,12 @@ class CrossAttnUpBlock3D(nn.Module):
         num_frames: int = 1,
         cross_attention_kwargs: Dict[str, Any] = None,
     ) -> Tensor:
-        is_freeu_enabled = (
-            getattr(self, "s1", None)
-            and getattr(self, "s2", None)
-            and getattr(self, "b1", None)
-            and getattr(self, "b2", None)
-        )
+        # is_freeu_enabled = (
+        #     getattr(self, "s1", None)
+        #     and getattr(self, "s2", None)
+        #     and getattr(self, "b1", None)
+        #     and getattr(self, "b2", None)
+        # )
 
         # TODO(Patrick, William) - attention mask is not used
         for resnet, temp_conv, attn, temp_attn in zip(
@@ -791,7 +791,7 @@ class CrossAttnUpBlock3D(nn.Module):
             res_hidden_states = res_hidden_states_tuple[-1]
             res_hidden_states_tuple = res_hidden_states_tuple[:-1]
 
-            # FreeU: Only operate on the first two stages
+            # # FreeU: Only operate on the first two stages
             # if is_freeu_enabled:
             #     hidden_states, res_hidden_states = apply_freeu(
             #         self.resolution_idx,
@@ -803,7 +803,7 @@ class CrossAttnUpBlock3D(nn.Module):
             #         b2=self.b2,
             #     )
 
-            hidden_states = ops.concatenate()([hidden_states, res_hidden_states], dim=1)
+            hidden_states = torch.cat([hidden_states, res_hidden_states], dim=1)
 
             hidden_states = resnet(hidden_states, temb)
             hidden_states = temp_conv(hidden_states, num_frames=num_frames)
@@ -897,18 +897,18 @@ class UpBlock3D(nn.Module):
         upsample_size: Optional[int] = None,
         num_frames: int = 1,
     ) -> Tensor:
-        is_freeu_enabled = (
-            getattr(self, "s1", None)
-            and getattr(self, "s2", None)
-            and getattr(self, "b1", None)
-            and getattr(self, "b2", None)
-        )
+        # is_freeu_enabled = (
+        #     getattr(self, "s1", None)
+        #     and getattr(self, "s2", None)
+        #     and getattr(self, "b1", None)
+        #     and getattr(self, "b2", None)
+        # )
         for resnet, temp_conv in zip(self.resnets, self.temp_convs):
             # pop res hidden states
             res_hidden_states = res_hidden_states_tuple[-1]
             res_hidden_states_tuple = res_hidden_states_tuple[:-1]
 
-            # FreeU: Only operate on the first two stages
+            # # FreeU: Only operate on the first two stages
             # if is_freeu_enabled:
             #     hidden_states, res_hidden_states = apply_freeu(
             #         self.resolution_idx,
@@ -920,7 +920,7 @@ class UpBlock3D(nn.Module):
             #         b2=self.b2,
             #     )
 
-            hidden_states = ops.concatenate()([hidden_states, res_hidden_states], dim=1)
+            hidden_states = torch.cat([hidden_states, res_hidden_states], dim=1)
 
             hidden_states = resnet(hidden_states, temb)
             hidden_states = temp_conv(hidden_states, num_frames=num_frames)
@@ -1313,12 +1313,12 @@ class CrossAttnUpBlockMotion(nn.Module):
         encoder_attention_mask: Optional[Tensor] = None,
         num_frames: int = 1,
     ) -> Tensor:
-        is_freeu_enabled = (
-            getattr(self, "s1", None)
-            and getattr(self, "s2", None)
-            and getattr(self, "b1", None)
-            and getattr(self, "b2", None)
-        )
+        # is_freeu_enabled = (
+        #     getattr(self, "s1", None)
+        #     and getattr(self, "s2", None)
+        #     and getattr(self, "b1", None)
+        #     and getattr(self, "b2", None)
+        # )
 
         blocks = zip(self.resnets, self.attentions, self.motion_modules)
         for resnet, attn, motion_module in blocks:
@@ -1326,7 +1326,7 @@ class CrossAttnUpBlockMotion(nn.Module):
             res_hidden_states = res_hidden_states_tuple[-1]
             res_hidden_states_tuple = res_hidden_states_tuple[:-1]
 
-            # FreeU: Only operate on the first two stages
+            # # FreeU: Only operate on the first two stages
             # if is_freeu_enabled:
             #     hidden_states, res_hidden_states = apply_freeu(
             #         self.resolution_idx,
@@ -1338,7 +1338,7 @@ class CrossAttnUpBlockMotion(nn.Module):
             #         b2=self.b2,
             #     )
 
-            hidden_states = ops.concatenate()([hidden_states, res_hidden_states], dim=1)
+            hidden_states = torch.cat([hidden_states, res_hidden_states], dim=1)
 
             hidden_states = resnet(hidden_states, temb)
             hidden_states = attn(
@@ -1443,12 +1443,12 @@ class UpBlockMotion(nn.Module):
         *args,
         **kwargs,
     ) -> Tensor:
-        is_freeu_enabled = (
-            getattr(self, "s1", None)
-            and getattr(self, "s2", None)
-            and getattr(self, "b1", None)
-            and getattr(self, "b2", None)
-        )
+        # is_freeu_enabled = (
+        #     getattr(self, "s1", None)
+        #     and getattr(self, "s2", None)
+        #     and getattr(self, "b1", None)
+        #     and getattr(self, "b2", None)
+        # )
 
         blocks = zip(self.resnets, self.motion_modules)
 
@@ -1457,7 +1457,7 @@ class UpBlockMotion(nn.Module):
             res_hidden_states = res_hidden_states_tuple[-1]
             res_hidden_states_tuple = res_hidden_states_tuple[:-1]
 
-            # FreeU: Only operate on the first two stages
+            # # FreeU: Only operate on the first two stages
             # if is_freeu_enabled:
             #     hidden_states, res_hidden_states = apply_freeu(
             #         self.resolution_idx,
@@ -1469,7 +1469,7 @@ class UpBlockMotion(nn.Module):
             #         b2=self.b2,
             #     )
 
-            hidden_states = ops.concatenate()([hidden_states, res_hidden_states], dim=1)
+            hidden_states = torch.cat([hidden_states, res_hidden_states], dim=1)
 
             hidden_states = resnet(hidden_states, temb)
             hidden_states = motion_module(hidden_states, num_frames=num_frames)[0]
@@ -2034,7 +2034,7 @@ class UpBlockSpatioTemporal(nn.Module):
             res_hidden_states = res_hidden_states_tuple[-1]
             res_hidden_states_tuple = res_hidden_states_tuple[:-1]
 
-            hidden_states = ops.concatenate()([hidden_states, res_hidden_states], dim=1)
+            hidden_states = torch.cat([hidden_states, res_hidden_states], dim=1)
 
             hidden_states = resnet(
                 hidden_states,
@@ -2122,7 +2122,8 @@ class CrossAttnUpBlockSpatioTemporal(nn.Module):
             res_hidden_states = res_hidden_states_tuple[-1]
             res_hidden_states_tuple = res_hidden_states_tuple[:-1]
 
-            hidden_states = ops.concatenate()([hidden_states, res_hidden_states], dim=1)
+            hidden_states = torch.cat([hidden_states, res_hidden_states], dim=1)
+
             hidden_states = resnet(
                 hidden_states,
                 temb,

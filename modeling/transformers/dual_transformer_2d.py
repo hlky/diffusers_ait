@@ -4,7 +4,8 @@ from aitemplate.compiler import ops
 
 from aitemplate.frontend import nn, Tensor
 
-from .transformer_2d import Transformer2DModel, Transformer2DModelOutput
+from ..modeling_outputs import Transformer2DModelOutput
+from .transformer_2d import Transformer2DModel
 
 
 class DualTransformer2DModel(nn.Module):
@@ -94,14 +95,14 @@ class DualTransformer2DModel(nn.Module):
     ):
         """
         Args:
-            hidden_states ( When discrete, `torch.LongTensor` of shape `(batch size, num latent pixels)`.
-                When continuous, `torch.Tensor` of shape `(batch size, channel, height, width)`): Input hidden_states.
-            encoder_hidden_states ( `torch.LongTensor` of shape `(batch size, encoder_hidden_states dim)`, *optional*):
+            hidden_states ( When discrete, `Tensor` of shape `(batch size, num latent pixels)`.
+                When continuous, `Tensor` of shape `(batch size, channel, height, width)`): Input hidden_states.
+            encoder_hidden_states ( `Tensor` of shape `(batch size, encoder_hidden_states dim)`, *optional*):
                 Conditional embeddings for cross attention layer. If not given, cross-attention defaults to
                 self-attention.
             timestep ( `torch.long`, *optional*):
                 Optional timestep to be applied as an embedding in AdaLayerNorm's. Used to indicate denoising step.
-            attention_mask (`torch.Tensor`, *optional*):
+            attention_mask (`Tensor`, *optional*):
                 Optional attention mask to be applied in Attention.
             cross_attention_kwargs (`dict`, *optional*):
                 A kwargs dictionary that if specified is passed along to the `AttentionProcessor` as defined under

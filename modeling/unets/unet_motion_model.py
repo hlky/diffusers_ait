@@ -1,81 +1,176 @@
-from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, Optional, Tuple, Union
 
 from aitemplate.compiler import ops
 
 from aitemplate.frontend import nn, Tensor
 
-from ...utils import BaseOutput
-from ..activations import get_activation
+from ...utils import logging
 from ..attention_processor import (
     ADDED_KV_ATTENTION_PROCESSORS,
     Attention,
     AttentionProcessor,
     AttnAddedKVProcessor,
     AttnProcessor,
+    AttnProcessor2_0,
     CROSS_ATTENTION_PROCESSORS,
+    IPAdapterAttnProcessor,
+    IPAdapterAttnProcessor2_0,
 )
 from ..embeddings import TimestepEmbedding, Timesteps
 
 from ..transformers.transformer_temporal import TransformerTemporalModel
+from .unet_2d_blocks import UNetMidBlock2DCrossAttn
+from .unet_2d_condition import UNet2DConditionModel
 from .unet_3d_blocks import (
-    CrossAttnDownBlock3D,
-    CrossAttnUpBlock3D,
-    DownBlock3D,
+    CrossAttnDownBlockMotion,
+    CrossAttnUpBlockMotion,
+    DownBlockMotion,
     get_down_block,
     get_up_block,
-    UNetMidBlock3DCrossAttn,
-    UpBlock3D,
+    UNetMidBlockCrossAttnMotion,
+    UpBlockMotion,
 )
+from .unet_3d_condition import UNet3DConditionOutput
 
 
-@dataclass
-class UNet3DConditionOutput(BaseOutput):
-    """
-    The output of [`UNet3DConditionModel`].
+class MotionModules(nn.Module):
+    def __init__(
+        self,
+        in_channels: int,
+        layers_per_block: int = 2,
+        num_attention_heads: int = 8,
+        attention_bias: bool = False,
+        cross_attention_dim: Optional[int] = None,
+        activation_fn: str = "geglu",
+        norm_num_groups: int = 32,
+        max_seq_length: int = 32,
+    ):
+        super().__init__()
+        self.motion_modules = nn.ModuleList([])
 
-    Args:
-        sample (`Tensor` of shape `(batch_size, num_channels, num_frames, height, width)`):
-            The hidden states output conditioned on `encoder_hidden_states` input. Output of last layer of model.
-    """
+        for i in range(layers_per_block):
+            self.motion_modules.append(
+                TransformerTemporalModel(
+                    in_channels=in_channels,
+                    norm_num_groups=norm_num_groups,
+                    cross_attention_dim=cross_attention_dim,
+                    activation_fn=activation_fn,
+                    attention_bias=attention_bias,
+                    num_attention_heads=num_attention_heads,
+                    attention_head_dim=in_channels // num_attention_heads,
+                    positional_embeddings="sinusoidal",
+                    num_positional_embeddings=max_seq_length,
+                )
+            )
 
-    sample: Tensor
+
+class MotionAdapter(nn.Module):
+
+    def __init__(
+        self,
+        block_out_channels: Tuple[int, ...] = (320, 640, 1280, 1280),
+        motion_layers_per_block: int = 2,
+        motion_mid_block_layers_per_block: int = 1,
+        motion_num_attention_heads: int = 8,
+        motion_norm_num_groups: int = 32,
+        motion_max_seq_length: int = 32,
+        use_motion_mid_block: bool = True,
+        conv_in_channels: Optional[int] = None,
+    ):
+        """Container to store AnimateDiff Motion Modules
+
+        Args:
+            block_out_channels (`Tuple[int]`, *optional*, defaults to `(320, 640, 1280, 1280)`):
+            The tuple of output channels for each UNet block.
+            motion_layers_per_block (`int`, *optional*, defaults to 2):
+                The number of motion layers per UNet block.
+            motion_mid_block_layers_per_block (`int`, *optional*, defaults to 1):
+                The number of motion layers in the middle UNet block.
+            motion_num_attention_heads (`int`, *optional*, defaults to 8):
+                The number of heads to use in each attention layer of the motion module.
+            motion_norm_num_groups (`int`, *optional*, defaults to 32):
+                The number of groups to use in each group normalization layer of the motion module.
+            motion_max_seq_length (`int`, *optional*, defaults to 32):
+                The maximum sequence length to use in the motion module.
+            use_motion_mid_block (`bool`, *optional*, defaults to True):
+                Whether to use a motion module in the middle of the UNet.
+        """
+
+        super().__init__()
+        down_blocks = []
+        up_blocks = []
+
+        if conv_in_channels:
+            # input
+            self.conv_in = nn.Conv2d(
+                conv_in_channels, block_out_channels[0], kernel_size=3, padding=1
+            )
+        else:
+            self.conv_in = None
+
+        for i, channel in enumerate(block_out_channels):
+            output_channel = block_out_channels[i]
+            down_blocks.append(
+                MotionModules(
+                    in_channels=output_channel,
+                    norm_num_groups=motion_norm_num_groups,
+                    cross_attention_dim=None,
+                    activation_fn="geglu",
+                    attention_bias=False,
+                    num_attention_heads=motion_num_attention_heads,
+                    max_seq_length=motion_max_seq_length,
+                    layers_per_block=motion_layers_per_block,
+                )
+            )
+
+        if use_motion_mid_block:
+            self.mid_block = MotionModules(
+                in_channels=block_out_channels[-1],
+                norm_num_groups=motion_norm_num_groups,
+                cross_attention_dim=None,
+                activation_fn="geglu",
+                attention_bias=False,
+                num_attention_heads=motion_num_attention_heads,
+                layers_per_block=motion_mid_block_layers_per_block,
+                max_seq_length=motion_max_seq_length,
+            )
+        else:
+            self.mid_block = None
+
+        reversed_block_out_channels = list(reversed(block_out_channels))
+        output_channel = reversed_block_out_channels[0]
+        for i, channel in enumerate(reversed_block_out_channels):
+            output_channel = reversed_block_out_channels[i]
+            up_blocks.append(
+                MotionModules(
+                    in_channels=output_channel,
+                    norm_num_groups=motion_norm_num_groups,
+                    cross_attention_dim=None,
+                    activation_fn="geglu",
+                    attention_bias=False,
+                    num_attention_heads=motion_num_attention_heads,
+                    max_seq_length=motion_max_seq_length,
+                    layers_per_block=motion_layers_per_block + 1,
+                )
+            )
+
+        self.down_blocks = nn.ModuleList(down_blocks)
+        self.up_blocks = nn.ModuleList(up_blocks)
+
+    def forward(self, sample):
+        pass
 
 
-class UNet3DConditionModel(nn.Module):
+class UNetMotionModel(nn.Module):
     r"""
-    A conditional 3D UNet model that takes a noisy sample, conditional state, and a timestep and returns a sample
-    shaped output.
+    A modified conditional 2D UNet model that takes a noisy sample, conditional state, and a timestep and returns a
+    sample shaped output.
 
     This model inherits from [`ModelMixin`]. Check the superclass documentation for it's generic methods implemented
     for all models (such as downloading or saving).
-
-    Parameters:
-        sample_size (`int` or `Tuple[int, int]`, *optional*, defaults to `None`):
-            Height and width of input/output sample.
-        in_channels (`int`, *optional*, defaults to 4): The number of channels in the input sample.
-        out_channels (`int`, *optional*, defaults to 4): The number of channels in the output.
-        down_block_types (`Tuple[str]`, *optional*, defaults to `("CrossAttnDownBlock3D", "CrossAttnDownBlock3D", "CrossAttnDownBlock3D", "DownBlock3D")`):
-            The tuple of downsample blocks to use.
-        up_block_types (`Tuple[str]`, *optional*, defaults to `("UpBlock3D", "CrossAttnUpBlock3D", "CrossAttnUpBlock3D", "CrossAttnUpBlock3D")`):
-            The tuple of upsample blocks to use.
-        block_out_channels (`Tuple[int]`, *optional*, defaults to `(320, 640, 1280, 1280)`):
-            The tuple of output channels for each block.
-        layers_per_block (`int`, *optional*, defaults to 2): The number of layers per block.
-        downsample_padding (`int`, *optional*, defaults to 1): The padding to use for the downsampling convolution.
-        mid_block_scale_factor (`float`, *optional*, defaults to 1.0): The scale factor to use for the mid block.
-        act_fn (`str`, *optional*, defaults to `"silu"`): The activation function to use.
-        norm_num_groups (`int`, *optional*, defaults to 32): The number of groups to use for the normalization.
-            If `None`, normalization and activation layers is skipped in post-processing.
-        norm_eps (`float`, *optional*, defaults to 1e-5): The epsilon to use for the normalization.
-        cross_attention_dim (`int`, *optional*, defaults to 1024): The dimension of the cross attention features.
-        attention_head_dim (`int`, *optional*, defaults to 64): The dimension of the attention heads.
-        num_attention_heads (`int`, *optional*): The number of attention heads.
-        time_cond_proj_dim (`int`, *optional*, defaults to `None`):
-            The dimension of `cond_proj` layer in the timestep embedding.
     """
 
-    _supports_gradient_checkpointing = False
+    _supports_gradient_checkpointing = True
 
     def __init__(
         self,
@@ -83,45 +178,42 @@ class UNet3DConditionModel(nn.Module):
         in_channels: int = 4,
         out_channels: int = 4,
         down_block_types: Tuple[str, ...] = (
-            "CrossAttnDownBlock3D",
-            "CrossAttnDownBlock3D",
-            "CrossAttnDownBlock3D",
-            "DownBlock3D",
+            "CrossAttnDownBlockMotion",
+            "CrossAttnDownBlockMotion",
+            "CrossAttnDownBlockMotion",
+            "DownBlockMotion",
         ),
         up_block_types: Tuple[str, ...] = (
-            "UpBlock3D",
-            "CrossAttnUpBlock3D",
-            "CrossAttnUpBlock3D",
-            "CrossAttnUpBlock3D",
+            "UpBlockMotion",
+            "CrossAttnUpBlockMotion",
+            "CrossAttnUpBlockMotion",
+            "CrossAttnUpBlockMotion",
         ),
         block_out_channels: Tuple[int, ...] = (320, 640, 1280, 1280),
         layers_per_block: int = 2,
         downsample_padding: int = 1,
         mid_block_scale_factor: float = 1,
         act_fn: str = "silu",
-        norm_num_groups: Optional[int] = 32,
+        norm_num_groups: int = 32,
         norm_eps: float = 1e-5,
-        cross_attention_dim: int = 1024,
-        attention_head_dim: Union[int, Tuple[int]] = 64,
-        num_attention_heads: Optional[Union[int, Tuple[int]]] = None,
+        cross_attention_dim: int = 1280,
+        transformer_layers_per_block: Union[int, Tuple[int], Tuple[Tuple]] = 1,
+        reverse_transformer_layers_per_block: Optional[Tuple[Tuple[int]]] = None,
+        use_linear_projection: bool = False,
+        num_attention_heads: Union[int, Tuple[int, ...]] = 8,
+        motion_max_seq_length: int = 32,
+        motion_num_attention_heads: int = 8,
+        use_motion_mid_block: int = True,
+        encoder_hid_dim: Optional[int] = None,
+        encoder_hid_dim_type: Optional[str] = None,
+        addition_embed_type: Optional[str] = None,
+        addition_time_embed_dim: Optional[int] = None,
+        projection_class_embeddings_input_dim: Optional[int] = None,
         time_cond_proj_dim: Optional[int] = None,
     ):
         super().__init__()
 
         self.sample_size = sample_size
-
-        if num_attention_heads is not None:
-            raise NotImplementedError(
-                "At the moment it is not possible to define the number of attention heads via `num_attention_heads` because of a naming issue as described in https://github.com/huggingface/diffusers/issues/2011#issuecomment-1547958131. Passing `num_attention_heads` will only be supported in diffusers v0.19."
-            )
-
-        # If `num_attention_heads` is not defined (which is the case for most models)
-        # it will default to `attention_head_dim`. This looks weird upon first reading it and it is.
-        # The reason for this behavior is to correct for incorrectly named variables that were introduced
-        # when this library was created. The incorrect naming was only discovered much later in https://github.com/huggingface/diffusers/issues/2011#issuecomment-1547958131
-        # Changing `attention_head_dim` to `num_attention_heads` for 40,000+ configurations is too backwards breaking
-        # which is why we correct for the naming here.
-        num_attention_heads = num_attention_heads or attention_head_dim
 
         # Check inputs
         if len(down_block_types) != len(up_block_types):
@@ -140,6 +232,30 @@ class UNet3DConditionModel(nn.Module):
             raise ValueError(
                 f"Must provide the same number of `num_attention_heads` as `down_block_types`. `num_attention_heads`: {num_attention_heads}. `down_block_types`: {down_block_types}."
             )
+
+        if isinstance(cross_attention_dim, list) and len(cross_attention_dim) != len(
+            down_block_types
+        ):
+            raise ValueError(
+                f"Must provide the same number of `cross_attention_dim` as `down_block_types`. `cross_attention_dim`: {cross_attention_dim}. `down_block_types`: {down_block_types}."
+            )
+
+        if not isinstance(layers_per_block, int) and len(layers_per_block) != len(
+            down_block_types
+        ):
+            raise ValueError(
+                f"Must provide the same number of `layers_per_block` as `down_block_types`. `layers_per_block`: {layers_per_block}. `down_block_types`: {down_block_types}."
+            )
+
+        if (
+            isinstance(transformer_layers_per_block, list)
+            and reverse_transformer_layers_per_block is None
+        ):
+            for layer_number_per_block in transformer_layers_per_block:
+                if isinstance(layer_number_per_block, list):
+                    raise ValueError(
+                        "Must provide 'reverse_transformer_layers_per_block` if using asymmetrical UNet."
+                    )
 
         # input
         conv_in_kernel = 3
@@ -164,13 +280,14 @@ class UNet3DConditionModel(nn.Module):
             cond_proj_dim=time_cond_proj_dim,
         )
 
-        self.transformer_in = TransformerTemporalModel(
-            num_attention_heads=8,
-            attention_head_dim=attention_head_dim,
-            in_channels=block_out_channels[0],
-            num_layers=1,
-            norm_num_groups=norm_num_groups,
-        )
+        if encoder_hid_dim_type is None:
+            self.encoder_hid_proj = None
+
+        if addition_embed_type == "text_time":
+            self.add_time_proj = Timesteps(addition_time_embed_dim, True, 0)
+            self.add_embedding = TimestepEmbedding(
+                projection_class_embeddings_input_dim, time_embed_dim
+            )
 
         # class embedding
         self.down_blocks = nn.ModuleList([])
@@ -178,6 +295,17 @@ class UNet3DConditionModel(nn.Module):
 
         if isinstance(num_attention_heads, int):
             num_attention_heads = (num_attention_heads,) * len(down_block_types)
+
+        if isinstance(cross_attention_dim, int):
+            cross_attention_dim = (cross_attention_dim,) * len(down_block_types)
+
+        if isinstance(layers_per_block, int):
+            layers_per_block = [layers_per_block] * len(down_block_types)
+
+        if isinstance(transformer_layers_per_block, int):
+            transformer_layers_per_block = [transformer_layers_per_block] * len(
+                down_block_types
+            )
 
         # down
         output_channel = block_out_channels[0]
@@ -188,7 +316,7 @@ class UNet3DConditionModel(nn.Module):
 
             down_block = get_down_block(
                 down_block_type,
-                num_layers=layers_per_block,
+                num_layers=layers_per_block[i],
                 in_channels=input_channel,
                 out_channels=output_channel,
                 temb_channels=time_embed_dim,
@@ -196,25 +324,49 @@ class UNet3DConditionModel(nn.Module):
                 resnet_eps=norm_eps,
                 resnet_act_fn=act_fn,
                 resnet_groups=norm_num_groups,
-                cross_attention_dim=cross_attention_dim,
+                cross_attention_dim=cross_attention_dim[i],
                 num_attention_heads=num_attention_heads[i],
                 downsample_padding=downsample_padding,
+                use_linear_projection=use_linear_projection,
                 dual_cross_attention=False,
+                temporal_num_attention_heads=motion_num_attention_heads,
+                temporal_max_seq_length=motion_max_seq_length,
+                transformer_layers_per_block=transformer_layers_per_block[i],
             )
             self.down_blocks.append(down_block)
 
         # mid
-        self.mid_block = UNetMidBlock3DCrossAttn(
-            in_channels=block_out_channels[-1],
-            temb_channels=time_embed_dim,
-            resnet_eps=norm_eps,
-            resnet_act_fn=act_fn,
-            output_scale_factor=mid_block_scale_factor,
-            cross_attention_dim=cross_attention_dim,
-            num_attention_heads=num_attention_heads[-1],
-            resnet_groups=norm_num_groups,
-            dual_cross_attention=False,
-        )
+        if use_motion_mid_block:
+            self.mid_block = UNetMidBlockCrossAttnMotion(
+                in_channels=block_out_channels[-1],
+                temb_channels=time_embed_dim,
+                resnet_eps=norm_eps,
+                resnet_act_fn=act_fn,
+                output_scale_factor=mid_block_scale_factor,
+                cross_attention_dim=cross_attention_dim[-1],
+                num_attention_heads=num_attention_heads[-1],
+                resnet_groups=norm_num_groups,
+                dual_cross_attention=False,
+                use_linear_projection=use_linear_projection,
+                temporal_num_attention_heads=motion_num_attention_heads,
+                temporal_max_seq_length=motion_max_seq_length,
+                transformer_layers_per_block=transformer_layers_per_block[-1],
+            )
+
+        else:
+            self.mid_block = UNetMidBlock2DCrossAttn(
+                in_channels=block_out_channels[-1],
+                temb_channels=time_embed_dim,
+                resnet_eps=norm_eps,
+                resnet_act_fn=act_fn,
+                output_scale_factor=mid_block_scale_factor,
+                cross_attention_dim=cross_attention_dim[-1],
+                num_attention_heads=num_attention_heads[-1],
+                resnet_groups=norm_num_groups,
+                dual_cross_attention=False,
+                use_linear_projection=use_linear_projection,
+                transformer_layers_per_block=transformer_layers_per_block[-1],
+            )
 
         # count how many layers upsample the images
         self.num_upsamplers = 0
@@ -222,6 +374,11 @@ class UNet3DConditionModel(nn.Module):
         # up
         reversed_block_out_channels = list(reversed(block_out_channels))
         reversed_num_attention_heads = list(reversed(num_attention_heads))
+        reversed_layers_per_block = list(reversed(layers_per_block))
+        reversed_cross_attention_dim = list(reversed(cross_attention_dim))
+        reversed_transformer_layers_per_block = list(
+            reversed(transformer_layers_per_block)
+        )
 
         output_channel = reversed_block_out_channels[0]
         for i, up_block_type in enumerate(up_block_types):
@@ -242,7 +399,7 @@ class UNet3DConditionModel(nn.Module):
 
             up_block = get_up_block(
                 up_block_type,
-                num_layers=layers_per_block + 1,
+                num_layers=reversed_layers_per_block[i] + 1,
                 in_channels=input_channel,
                 out_channels=output_channel,
                 prev_output_channel=prev_output_channel,
@@ -251,10 +408,14 @@ class UNet3DConditionModel(nn.Module):
                 resnet_eps=norm_eps,
                 resnet_act_fn=act_fn,
                 resnet_groups=norm_num_groups,
-                cross_attention_dim=cross_attention_dim,
+                cross_attention_dim=reversed_cross_attention_dim[i],
                 num_attention_heads=reversed_num_attention_heads[i],
                 dual_cross_attention=False,
                 resolution_idx=i,
+                use_linear_projection=use_linear_projection,
+                temporal_num_attention_heads=motion_num_attention_heads,
+                temporal_max_seq_length=motion_max_seq_length,
+                transformer_layers_per_block=reversed_transformer_layers_per_block[i],
             )
             self.up_blocks.append(up_block)
             prev_output_channel = output_channel
@@ -266,7 +427,7 @@ class UNet3DConditionModel(nn.Module):
                 num_groups=norm_num_groups,
                 eps=norm_eps,
             )
-            self.conv_act = get_activation("silu")
+            self.conv_act = nn.SiLU()
         else:
             self.conv_norm_out = None
             self.conv_act = None
@@ -278,76 +439,6 @@ class UNet3DConditionModel(nn.Module):
             kernel_size=conv_out_kernel,
             padding=conv_out_padding,
         )
-
-    # Copied from diffusers.models.unets.unet_2d_condition.UNet2DConditionModel.set_attention_slice
-    def set_attention_slice(self, slice_size: Union[str, int, List[int]]) -> None:
-        r"""
-        Enable sliced attention computation.
-
-        When this option is enabled, the attention module splits the input tensor in slices to compute attention in
-        several steps. This is useful for saving some memory in exchange for a small decrease in speed.
-
-        Args:
-            slice_size (`str` or `int` or `list(int)`, *optional*, defaults to `"auto"`):
-                When `"auto"`, input to the attention heads is halved, so attention is computed in two steps. If
-                `"max"`, maximum amount of memory is saved by running only one slice at a time. If a number is
-                provided, uses as many slices as `attention_head_dim // slice_size`. In this case, `attention_head_dim`
-                must be a multiple of `slice_size`.
-        """
-        sliceable_head_dims = []
-
-        def fn_recursive_retrieve_sliceable_dims(module: nn.Module):
-            if hasattr(module, "set_attention_slice"):
-                sliceable_head_dims.append(module.sliceable_head_dim)
-
-            for child in module.children():
-                fn_recursive_retrieve_sliceable_dims(child)
-
-        # retrieve number of attention layers
-        for module in self.children():
-            fn_recursive_retrieve_sliceable_dims(module)
-
-        num_sliceable_layers = len(sliceable_head_dims)
-
-        if slice_size == "auto":
-            # half the attention head size is usually a good trade-off between
-            # speed and memory
-            slice_size = [dim // 2 for dim in sliceable_head_dims]
-        elif slice_size == "max":
-            # make smallest slice possible
-            slice_size = num_sliceable_layers * [1]
-
-        slice_size = (
-            num_sliceable_layers * [slice_size]
-            if not isinstance(slice_size, list)
-            else slice_size
-        )
-
-        if len(slice_size) != len(sliceable_head_dims):
-            raise ValueError(
-                f"You have provided {len(slice_size)}, but {self.config} has {len(sliceable_head_dims)} different"
-                f" attention layers. Make sure to match `len(slice_size)` to be {len(sliceable_head_dims)}."
-            )
-
-        for i in range(len(slice_size)):
-            size = slice_size[i]
-            dim = sliceable_head_dims[i]
-            if size is not None and size > dim:
-                raise ValueError(f"size {size} has to be smaller or equal to {dim}.")
-
-        # Recursively walk through all the children.
-        # Any children which exposes the set_attention_slice method
-        # gets the message
-        def fn_recursive_set_attention_slice(module: nn.Module, slice_size: List[int]):
-            if hasattr(module, "set_attention_slice"):
-                module.set_attention_slice(slice_size.pop())
-
-            for child in module.children():
-                fn_recursive_set_attention_slice(child, slice_size)
-
-        reversed_slice_size = list(reversed(slice_size))
-        for module in self.children():
-            fn_recursive_set_attention_slice(module, reversed_slice_size)
 
     # Copied from diffusers.models.unets.unet_2d_condition.UNet2DConditionModel.set_attn_processor
     def set_attn_processor(
@@ -386,6 +477,7 @@ class UNet3DConditionModel(nn.Module):
         for name, module in self.named_children():
             fn_recursive_attn_processor(name, module, processor)
 
+    # Copied from diffusers.models.unets.unet_3d_condition.UNet3DConditionModel.enable_forward_chunking
     def enable_forward_chunking(
         self, chunk_size: Optional[int] = None, dim: int = 0
     ) -> None:
@@ -417,7 +509,8 @@ class UNet3DConditionModel(nn.Module):
         for module in self.children():
             fn_recursive_feed_forward(module, chunk_size, dim)
 
-    def disable_forward_chunking(self):
+    # Copied from diffusers.models.unets.unet_3d_condition.UNet3DConditionModel.disable_forward_chunking
+    def disable_forward_chunking(self) -> None:
         def fn_recursive_feed_forward(module: nn.Module, chunk_size: int, dim: int):
             if hasattr(module, "set_chunk_feed_forward"):
                 module.set_chunk_feed_forward(chunk_size=chunk_size, dim=dim)
@@ -429,7 +522,7 @@ class UNet3DConditionModel(nn.Module):
             fn_recursive_feed_forward(module, None, 0)
 
     # Copied from diffusers.models.unets.unet_2d_condition.UNet2DConditionModel.enable_freeu
-    def enable_freeu(self, s1, s2, b1, b2):
+    def enable_freeu(self, s1: float, s2: float, b1: float, b2: float) -> None:
         r"""Enables the FreeU mechanism from https://arxiv.org/abs/2309.11497.
 
         The suffixes after the scaling factors represent the stage blocks where they are being applied.
@@ -454,7 +547,7 @@ class UNet3DConditionModel(nn.Module):
             setattr(upsample_block, "b2", b2)
 
     # Copied from diffusers.models.unets.unet_2d_condition.UNet2DConditionModel.disable_freeu
-    def disable_freeu(self):
+    def disable_freeu(self) -> None:
         """Disables the FreeU mechanism."""
         freeu_keys = {"s1", "s2", "b1", "b2"}
         for i, upsample_block in enumerate(self.up_blocks):
@@ -470,25 +563,23 @@ class UNet3DConditionModel(nn.Module):
         sample: Tensor,
         timestep: Union[Tensor, float, int],
         encoder_hidden_states: Tensor,
-        class_labels: Optional[Tensor] = None,
         timestep_cond: Optional[Tensor] = None,
         attention_mask: Optional[Tensor] = None,
         cross_attention_kwargs: Optional[Dict[str, Any]] = None,
+        added_cond_kwargs: Optional[Dict[str, Tensor]] = None,
         down_block_additional_residuals: Optional[Tuple[Tensor]] = None,
         mid_block_additional_residual: Optional[Tensor] = None,
         return_dict: bool = True,
     ) -> Union[UNet3DConditionOutput, Tuple[Tensor]]:
         r"""
-        The [`UNet3DConditionModel`] forward method.
+        The [`UNetMotionModel`] forward method.
 
         Args:
             sample (`Tensor`):
-                The noisy input tensor with the following shape `(batch, num_channels, num_frames, height, width`.
+                The noisy input tensor with the following shape `(batch, num_frames, channel, height, width`.
             timestep (`Tensor` or `float` or `int`): The number of timesteps to denoise an input.
             encoder_hidden_states (`Tensor`):
                 The encoder hidden states with shape `(batch, sequence_length, feature_dim)`.
-            class_labels (`Tensor`, *optional*, defaults to `None`):
-                Optional class labels for conditioning. Their embeddings will be summed with the timestep embeddings.
             timestep_cond: (`Tensor`, *optional*, defaults to `None`):
                 Conditional embeddings for timestep. If provided, the embeddings will be summed with the samples passed
                 through the `self.time_embedding` layer to obtain the timestep embeddings.
@@ -507,8 +598,6 @@ class UNet3DConditionModel(nn.Module):
             return_dict (`bool`, *optional*, defaults to `True`):
                 Whether or not to return a [`~models.unets.unet_3d_condition.UNet3DConditionOutput`] instead of a plain
                 tuple.
-            cross_attention_kwargs (`dict`, *optional*):
-                A kwargs dictionary that if specified is passed along to the [`AttnProcessor`].
 
         Returns:
             [`~models.unets.unet_3d_condition.UNet3DConditionOutput`] or `tuple`:
@@ -550,23 +639,54 @@ class UNet3DConditionModel(nn.Module):
         t_emb = t_emb.to(dtype=self.dtype)
 
         emb = self.time_embedding(t_emb, timestep_cond)
+        aug_emb = None
+
+        if self.config.addition_embed_type == "text_time":
+            if "text_embeds" not in added_cond_kwargs:
+                raise ValueError(
+                    f"{self.__class__} has the config param `addition_embed_type` set to 'text_time' which requires the keyword argument `text_embeds` to be passed in `added_cond_kwargs`"
+                )
+
+            text_embeds = added_cond_kwargs.get("text_embeds")
+            if "time_ids" not in added_cond_kwargs:
+                raise ValueError(
+                    f"{self.__class__} has the config param `addition_embed_type` set to 'text_time' which requires the keyword argument `time_ids` to be passed in `added_cond_kwargs`"
+                )
+            time_ids = added_cond_kwargs.get("time_ids")
+            time_embeds = self.add_time_proj(time_ids.flatten())
+            time_embeds = time_embeds.reshape((text_embeds.shape[0], -1))
+
+            add_embeds = torch.concat([text_embeds, time_embeds], dim=-1)
+            add_embeds = add_embeds.to(emb.dtype)
+            aug_emb = self.add_embedding(add_embeds)
+
+        emb = emb if aug_emb is None else emb + aug_emb
         emb = emb.repeat_interleave(repeats=num_frames, dim=0)
         encoder_hidden_states = encoder_hidden_states.repeat_interleave(
             repeats=num_frames, dim=0
         )
+
+        if (
+            self.encoder_hid_proj is not None
+            and self.config.encoder_hid_dim_type == "ip_image_proj"
+        ):
+            if "image_embeds" not in added_cond_kwargs:
+                raise ValueError(
+                    f"{self.__class__} has the config param `encoder_hid_dim_type` set to 'ip_image_proj' which requires the keyword argument `image_embeds` to be passed in  `added_conditions`"
+                )
+            image_embeds = added_cond_kwargs.get("image_embeds")
+            image_embeds = self.encoder_hid_proj(image_embeds)
+            image_embeds = [
+                image_embed.repeat_interleave(repeats=num_frames, dim=0)
+                for image_embed in image_embeds
+            ]
+            encoder_hidden_states = (encoder_hidden_states, image_embeds)
 
         # 2. pre-process
         sample = sample.permute(0, 2, 1, 3, 4).reshape(
             (sample.shape[0] * num_frames, -1) + sample.shape[3:]
         )
         sample = self.conv_in(sample)
-
-        sample = self.transformer_in(
-            sample,
-            num_frames=num_frames,
-            cross_attention_kwargs=cross_attention_kwargs,
-            return_dict=False,
-        )[0]
 
         # 3. down
         down_block_res_samples = (sample,)
@@ -605,14 +725,24 @@ class UNet3DConditionModel(nn.Module):
 
         # 4. mid
         if self.mid_block is not None:
-            sample = self.mid_block(
-                sample,
-                emb,
-                encoder_hidden_states=encoder_hidden_states,
-                attention_mask=attention_mask,
-                num_frames=num_frames,
-                cross_attention_kwargs=cross_attention_kwargs,
-            )
+            # To support older versions of motion modules that don't have a mid_block
+            if hasattr(self.mid_block, "motion_modules"):
+                sample = self.mid_block(
+                    sample,
+                    emb,
+                    encoder_hidden_states=encoder_hidden_states,
+                    attention_mask=attention_mask,
+                    num_frames=num_frames,
+                    cross_attention_kwargs=cross_attention_kwargs,
+                )
+            else:
+                sample = self.mid_block(
+                    sample,
+                    emb,
+                    encoder_hidden_states=encoder_hidden_states,
+                    attention_mask=attention_mask,
+                    cross_attention_kwargs=cross_attention_kwargs,
+                )
 
         if mid_block_additional_residual is not None:
             sample = sample + mid_block_additional_residual

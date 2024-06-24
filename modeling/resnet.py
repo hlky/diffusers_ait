@@ -9,11 +9,23 @@ from aitemplate.frontend import nn, Tensor
 
 from .activations import get_activation
 from .attention_processor import SpatialNorm
-from .downsampling import Downsample2D  # noqa
-
+from .downsampling import (  # noqa
+    Downsample1D,
+    Downsample2D,
+    downsample_2d,
+    FirDownsample2D,
+    KDownsample2D,
+)
 from .embeddings import SiLU
 from .normalization import AdaGroupNorm
-from .upsampling import Upsample2D  # noqa
+from .upsampling import (  # noqa
+    FirUpsample2D,
+    KUpsample2D,
+    upfirdn2d_native,
+    Upsample1D,
+    Upsample2D,
+    upsample_2d,
+)
 
 
 def get_shape(x):
