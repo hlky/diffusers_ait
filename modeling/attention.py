@@ -26,20 +26,29 @@ class GatedSelfAttentionDense(nn.Module):
         d_head (`int`): The number of channels in each head.
     """
 
-    def __init__(self, query_dim: int, context_dim: int, n_heads: int, d_head: int):
+    def __init__(
+        self,
+        query_dim: int,
+        context_dim: int,
+        n_heads: int,
+        d_head: int,
+        dtype: str = "float16",
+    ):
         super().__init__()
 
         # we need a linear projection since we need cat visual feature and obj feature
-        self.linear = nn.Linear(context_dim, query_dim)
+        self.linear = nn.Linear(context_dim, query_dim, dtype=dtype)
 
-        self.attn = Attention(query_dim=query_dim, heads=n_heads, dim_head=d_head)
-        self.ff = FeedForward(query_dim, activation_fn="geglu")
+        self.attn = Attention(
+            query_dim=query_dim, heads=n_heads, dim_head=d_head, dtype=dtype
+        )
+        self.ff = FeedForward(query_dim, activation_fn="geglu", dtype=dtype)
 
-        self.norm1 = nn.LayerNorm(query_dim)
-        self.norm2 = nn.LayerNorm(query_dim)
+        self.norm1 = nn.LayerNorm(query_dim, dtype=dtype)
+        self.norm2 = nn.LayerNorm(query_dim, dtype=dtype)
 
-        self.register_parameter("alpha_attn", nn.Parameter(Tensor(0.0)))
-        self.register_parameter("alpha_dense", nn.Parameter(Tensor(0.0)))
+        self.alpha_attn = nn.Parameter([1], value=0.0, dtype=dtype)
+        self.alpha_dense = nn.Parameter([1], value=0.0, dtype=dtype)
 
         self.enabled = True
 
@@ -47,17 +56,15 @@ class GatedSelfAttentionDense(nn.Module):
         if not self.enabled:
             return x
 
-        n_visual = x.shape[1]
+        n_visual = ops.size()(x, dim=1)
         objs = self.linear(objs)
 
-        x = (
-            x
-            + self.alpha_attn.tanh()
-            * self.attn(self.norm1(ops.concatenate()([x, objs], dim=1)))[
-                :, :n_visual, :
-            ]
+        x = x + ops.tanh(self.alpha_attn.tensor()) * ops.dynamic_slice()(
+            self.attn(self.norm1(ops.concatenate()([x, objs], dim=1))),
+            start_indices=[0, 0, 0],
+            end_indices=[None, n_visual, None],
         )
-        x = x + self.alpha_dense.tanh() * self.ff(self.norm2(x))
+        x = x + ops.tanh(self.alpha_dense.tensor()) * self.ff(self.norm2(x))
 
         return x
 
@@ -122,6 +129,7 @@ class BasicTransformerBlock(nn.Module):
         ff_inner_dim: Optional[int] = None,
         ff_bias: bool = True,
         attention_out_bias: bool = True,
+        dtype: str = "float16",
     ):
         super().__init__()
         self.only_cross_attention = only_cross_attention
@@ -153,7 +161,7 @@ class BasicTransformerBlock(nn.Module):
 
         if positional_embeddings == "sinusoidal":
             self.pos_embed = SinusoidalPositionalEmbedding(
-                dim, max_seq_length=num_positional_embeddings
+                dim, max_seq_length=num_positional_embeddings, dtype=dtype
             )
         else:
             self.pos_embed = None
@@ -161,9 +169,9 @@ class BasicTransformerBlock(nn.Module):
         # Define 3 blocks. Each block has its own normalization layer.
         # 1. Self-Attn
         if norm_type == "ada_norm":
-            self.norm1 = AdaLayerNorm(dim, num_embeds_ada_norm)
+            self.norm1 = AdaLayerNorm(dim, num_embeds_ada_norm, dtype=dtype)
         elif norm_type == "ada_norm_zero":
-            self.norm1 = AdaLayerNormZero(dim, num_embeds_ada_norm)
+            self.norm1 = AdaLayerNormZero(dim, num_embeds_ada_norm, dtype=dtype)
         elif norm_type == "ada_norm_continuous":
             self.norm1 = AdaLayerNormContinuous(
                 dim,
@@ -172,10 +180,14 @@ class BasicTransformerBlock(nn.Module):
                 norm_eps,
                 ada_norm_bias,
                 "rms_norm",
+                dtype=dtype,
             )
         else:
             self.norm1 = nn.LayerNorm(
-                dim, elementwise_affine=norm_elementwise_affine, eps=norm_eps
+                dim,
+                elementwise_affine=norm_elementwise_affine,
+                eps=norm_eps,
+                dtype=dtype,
             )
 
         self.attn1 = Attention(
@@ -187,6 +199,7 @@ class BasicTransformerBlock(nn.Module):
             cross_attention_dim=cross_attention_dim if only_cross_attention else None,
             upcast_attention=upcast_attention,
             out_bias=attention_out_bias,
+            dtype=dtype,
         )
 
         # 2. Cross-Attn
@@ -195,7 +208,7 @@ class BasicTransformerBlock(nn.Module):
             # I.e. the number of returned modulation chunks from AdaLayerZero would not make sense if returned during
             # the second cross attention block.
             if norm_type == "ada_norm":
-                self.norm2 = AdaLayerNorm(dim, num_embeds_ada_norm)
+                self.norm2 = AdaLayerNorm(dim, num_embeds_ada_norm, dtype=dtype)
             elif norm_type == "ada_norm_continuous":
                 self.norm2 = AdaLayerNormContinuous(
                     dim,
@@ -204,9 +217,15 @@ class BasicTransformerBlock(nn.Module):
                     norm_eps,
                     ada_norm_bias,
                     "rms_norm",
+                    dtype=dtype,
                 )
             else:
-                self.norm2 = nn.LayerNorm(dim, norm_eps, norm_elementwise_affine)
+                self.norm2 = nn.LayerNorm(
+                    dim,
+                    norm_eps,
+                    elementwise_affine=norm_elementwise_affine,
+                    dtype=dtype,
+                )
 
             self.attn2 = Attention(
                 query_dim=dim,
@@ -219,6 +238,7 @@ class BasicTransformerBlock(nn.Module):
                 bias=attention_bias,
                 upcast_attention=upcast_attention,
                 out_bias=attention_out_bias,
+                dtype=dtype,
             )  # is self-attn if encoder_hidden_states is none
         else:
             self.norm2 = None
@@ -233,6 +253,7 @@ class BasicTransformerBlock(nn.Module):
                 norm_eps,
                 ada_norm_bias,
                 "layer_norm",
+                dtype=dtype,
             )
 
         elif norm_type in [
@@ -241,7 +262,9 @@ class BasicTransformerBlock(nn.Module):
             "layer_norm",
             "ada_norm_continuous",
         ]:
-            self.norm3 = nn.LayerNorm(dim, norm_eps, norm_elementwise_affine)
+            self.norm3 = nn.LayerNorm(
+                dim, norm_eps, elementwise_affine=norm_elementwise_affine, dtype=dtype
+            )
         elif norm_type == "layer_norm_i2vgen":
             self.norm3 = None
 
@@ -252,6 +275,7 @@ class BasicTransformerBlock(nn.Module):
             final_dropout=final_dropout,
             inner_dim=ff_inner_dim,
             bias=ff_bias,
+            dtype=dtype,
         )
 
         # 4. Fuser
@@ -262,7 +286,7 @@ class BasicTransformerBlock(nn.Module):
 
         # 5. Scale-shift for PixArt-Alpha.
         if norm_type == "ada_norm_single":
-            self.scale_shift_table = nn.Parameter([6, dim])
+            self.scale_shift_table = nn.Parameter([6, dim], dtype=dtype)
 
     def forward(
         self,
@@ -295,12 +319,22 @@ class BasicTransformerBlock(nn.Module):
                 hidden_states, added_cond_kwargs["pooled_text_emb"]
             )
         elif self.norm_type == "ada_norm_single":
-            shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
-                self.scale_shift_table[None] + timestep.reshape(batch_size, 6, -1)
-            ).chunk(6, dim=1)
+            (
+                shift_msa,
+                scale_msa,
+                gate_msa,
+                shift_mlp,
+                scale_mlp,
+                gate_mlp,
+            ) = ops.chunk()(
+                ops.unsqueeze(0)(self.scale_shift_table.tensor())
+                + ops.reshape()(timestep, [batch_size, 6, -1]),
+                chunks=6,
+                dim=1,
+            )
             norm_hidden_states = self.norm1(hidden_states)
             norm_hidden_states = norm_hidden_states * (1 + scale_msa) + shift_msa
-            norm_hidden_states = norm_hidden_states.squeeze(1)
+            norm_hidden_states = ops.squeeze(1)(norm_hidden_states)
         else:
             raise ValueError("Incorrect norm used")
 
@@ -322,13 +356,13 @@ class BasicTransformerBlock(nn.Module):
             **cross_attention_kwargs,
         )
         if self.norm_type == "ada_norm_zero":
-            attn_output = gate_msa.unsqueeze(1) * attn_output
+            attn_output = ops.unsqueeze(1)(gate_msa) * attn_output
         elif self.norm_type == "ada_norm_single":
             attn_output = gate_msa * attn_output
 
         hidden_states = attn_output + hidden_states
         if hidden_states.ndim == 4:
-            hidden_states = hidden_states.squeeze(1)
+            hidden_states = ops.squeeze(1)(hidden_states)
 
         # 1.2 GLIGEN Control
         if gligen_kwargs is not None:
@@ -372,9 +406,9 @@ class BasicTransformerBlock(nn.Module):
             norm_hidden_states = self.norm3(hidden_states)
 
         if self.norm_type == "ada_norm_zero":
-            norm_hidden_states = (
-                norm_hidden_states * (1 + scale_mlp[:, None]) + shift_mlp[:, None]
-            )
+            norm_hidden_states = norm_hidden_states * (
+                1 + ops.unsqueeze(1)(scale_mlp)
+            ) + ops.unsqueeze(1)(shift_mlp)
 
         if self.norm_type == "ada_norm_single":
             norm_hidden_states = self.norm2(hidden_states)
@@ -383,13 +417,13 @@ class BasicTransformerBlock(nn.Module):
         ff_output = self.ff(norm_hidden_states)
 
         if self.norm_type == "ada_norm_zero":
-            ff_output = gate_mlp.unsqueeze(1) * ff_output
+            ff_output = ops.unsqueeze(1)(gate_mlp) * ff_output
         elif self.norm_type == "ada_norm_single":
             ff_output = gate_mlp * ff_output
 
         hidden_states = ff_output + hidden_states
         if hidden_states.ndim == 4:
-            hidden_states = hidden_states.squeeze(1)
+            hidden_states = ops.squeeze(1)(hidden_states)
 
         return hidden_states
 
@@ -413,26 +447,26 @@ class TemporalBasicTransformerBlock(nn.Module):
         num_attention_heads: int,
         attention_head_dim: int,
         cross_attention_dim: Optional[int] = None,
+        dtype: str = "float16",
     ):
         super().__init__()
         self.is_res = dim == time_mix_inner_dim
 
-        self.norm_in = nn.LayerNorm(dim)
+        self.norm_in = nn.LayerNorm(dim, dtype=dtype)
 
         # Define 3 blocks. Each block has its own normalization layer.
         # 1. Self-Attn
         self.ff_in = FeedForward(
-            dim,
-            dim_out=time_mix_inner_dim,
-            activation_fn="geglu",
+            dim, dim_out=time_mix_inner_dim, activation_fn="geglu", dtype=dtype
         )
 
-        self.norm1 = nn.LayerNorm(time_mix_inner_dim)
+        self.norm1 = nn.LayerNorm(time_mix_inner_dim, dtype=dtype)
         self.attn1 = Attention(
             query_dim=time_mix_inner_dim,
             heads=num_attention_heads,
             dim_head=attention_head_dim,
             cross_attention_dim=None,
+            dtype=dtype,
         )
 
         # 2. Cross-Attn
@@ -440,20 +474,21 @@ class TemporalBasicTransformerBlock(nn.Module):
             # We currently only use AdaLayerNormZero for self attention where there will only be one attention block.
             # I.e. the number of returned modulation chunks from AdaLayerZero would not make sense if returned during
             # the second cross attention block.
-            self.norm2 = nn.LayerNorm(time_mix_inner_dim)
+            self.norm2 = nn.LayerNorm(time_mix_inner_dim, dtype=dtype)
             self.attn2 = Attention(
                 query_dim=time_mix_inner_dim,
                 cross_attention_dim=cross_attention_dim,
                 heads=num_attention_heads,
                 dim_head=attention_head_dim,
+                dtype=dtype,
             )  # is self-attn if encoder_hidden_states is none
         else:
             self.norm2 = None
             self.attn2 = None
 
         # 3. Feed-forward
-        self.norm3 = nn.LayerNorm(time_mix_inner_dim)
-        self.ff = FeedForward(time_mix_inner_dim, activation_fn="geglu")
+        self.norm3 = nn.LayerNorm(time_mix_inner_dim, dtype=dtype)
+        self.ff = FeedForward(time_mix_inner_dim, activation_fn="geglu", dtype=dtype)
 
         # let chunk size default to None
         self._chunk_size = None
@@ -473,17 +508,18 @@ class TemporalBasicTransformerBlock(nn.Module):
     ) -> Tensor:
         # Notice that normalization is always applied before the real computation in the following blocks.
         # 0. Self-Attention
-        batch_size = hidden_states.shape[0]
+        batch_size = ops.size()(hidden_states, dim=0)
 
-        batch_frames, seq_length, channels = hidden_states.shape
-        batch_size = batch_frames // num_frames
+        batch_frames, seq_length, channels = ops.size()(hidden_states)
+        batch_size = batch_frames / num_frames
 
-        hidden_states = hidden_states[None, :].reshape(
-            batch_size, num_frames, seq_length, channels
+        hidden_states = ops.reshape()(
+            ops.unsqueeze(0)(hidden_states),
+            [batch_size, num_frames, seq_length, channels],
         )
-        hidden_states = hidden_states.permute(0, 2, 1, 3)
-        hidden_states = hidden_states.reshape(
-            batch_size * seq_length, num_frames, channels
+        # hidden_states = hidden_states.permute(0, 2, 1, 3)
+        hidden_states = ops.reshape()(
+            hidden_states, [batch_size * seq_length, num_frames, channels]
         )
 
         residual = hidden_states
@@ -516,12 +552,12 @@ class TemporalBasicTransformerBlock(nn.Module):
         else:
             hidden_states = ff_output
 
-        hidden_states = hidden_states[None, :].reshape(
-            batch_size, seq_length, num_frames, channels
+        hidden_states = ops.unsqueeze(0)(
+            hidden_states, [batch_size, seq_length, num_frames, channels]
         )
-        hidden_states = hidden_states.permute(0, 2, 1, 3)
-        hidden_states = hidden_states.reshape(
-            batch_size * num_frames, seq_length, channels
+        # hidden_states = hidden_states.permute(0, 2, 1, 3)
+        hidden_states = ops.reshape()(
+            hidden_states, [batch_size * num_frames, seq_length, channels]
         )
 
         return hidden_states
@@ -539,14 +575,17 @@ class SkipFFTransformerBlock(nn.Module):
         cross_attention_dim: Optional[int] = None,
         attention_bias: bool = False,
         attention_out_bias: bool = True,
+        dtype: str = "float16",
     ):
         super().__init__()
         if kv_input_dim != dim:
-            self.kv_mapper = nn.Linear(kv_input_dim, dim, kv_input_dim_proj_use_bias)
+            self.kv_mapper = nn.Linear(
+                kv_input_dim, dim, kv_input_dim_proj_use_bias, dtype=dtype
+            )
         else:
             self.kv_mapper = None
 
-        self.norm1 = RMSNorm(dim, 1e-06)
+        self.norm1 = RMSNorm(dim, 1e-06, dtype=dtype)
 
         self.attn1 = Attention(
             query_dim=dim,
@@ -556,9 +595,10 @@ class SkipFFTransformerBlock(nn.Module):
             bias=attention_bias,
             cross_attention_dim=cross_attention_dim,
             out_bias=attention_out_bias,
+            dtype=dtype,
         )
 
-        self.norm2 = RMSNorm(dim, 1e-06)
+        self.norm2 = RMSNorm(dim, 1e-06, dtype=dtype)
 
         self.attn2 = Attention(
             query_dim=dim,
@@ -568,9 +608,15 @@ class SkipFFTransformerBlock(nn.Module):
             dropout=dropout,
             bias=attention_bias,
             out_bias=attention_out_bias,
+            dtype=dtype,
         )
 
-    def forward(self, hidden_states, encoder_hidden_states, cross_attention_kwargs):
+    def forward(
+        self,
+        hidden_states: Tensor,
+        encoder_hidden_states: Tensor,
+        cross_attention_kwargs: Dict[str, Tensor],
+    ):
         cross_attention_kwargs = (
             cross_attention_kwargs.copy() if cross_attention_kwargs is not None else {}
         )
@@ -625,6 +671,7 @@ class FeedForward(nn.Module):
         final_dropout: bool = False,
         inner_dim=None,
         bias: bool = True,
+        dtype: str = "float16",
     ):
         super().__init__()
         if inner_dim is None:
@@ -632,13 +679,13 @@ class FeedForward(nn.Module):
         dim_out = dim_out if dim_out is not None else dim
 
         if activation_fn == "gelu":
-            act_fn = GELU(dim, inner_dim, bias=bias)
+            act_fn = GELU(dim, inner_dim, bias=bias, dtype=dtype)
         if activation_fn == "gelu-approximate":
-            act_fn = GELU(dim, inner_dim, approximate="tanh", bias=bias)
+            act_fn = GELU(dim, inner_dim, approximate="tanh", bias=bias, dtype=dtype)
         elif activation_fn == "geglu":
-            act_fn = GEGLU(dim, inner_dim, bias=bias)
+            act_fn = GEGLU(dim, inner_dim, bias=bias, dtype=dtype)
         elif activation_fn == "geglu-approximate":
-            act_fn = ApproximateGELU(dim, inner_dim, bias=bias)
+            act_fn = ApproximateGELU(dim, inner_dim, bias=bias, dtype=dtype)
 
         self.net = nn.ModuleList([])
         # project in
@@ -646,7 +693,7 @@ class FeedForward(nn.Module):
         # project dropout
         self.net.append(nn.Dropout(dropout))
         # project out
-        self.net.append(nn.Linear(inner_dim, dim_out, bias=bias))
+        self.net.append(nn.Linear(inner_dim, dim_out, bias=bias, dtype=dtype))
         # FF as used in Vision Transformer, MLP-Mixer, etc. have a final dropout
         if final_dropout:
             self.net.append(nn.Dropout(dropout))
