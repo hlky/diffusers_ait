@@ -59,10 +59,21 @@ class GELU(nn.Module):
     """
 
     def __init__(
-        self, dim_in: int, dim_out: int, approximate: str = "none", bias: bool = True
+        self,
+        dim_in: int,
+        dim_out: int,
+        approximate: str = "none",
+        bias: bool = True,
+        dtype: str = "float16",
     ):
         super().__init__()
-        self.proj = nn.Linear(dim_in, dim_out, bias=bias, specialization="fast_gelu")
+        self.proj = nn.Linear(
+            dim_in,
+            dim_out,
+            bias=bias,
+            specialization="fast_gelu" if approximate == "tanh" else "gelu",
+            dtype=dtype,
+        )
 
     def forward(self, hidden_states):
         hidden_states = self.proj(hidden_states)
@@ -79,9 +90,11 @@ class GEGLU(nn.Module):
         bias (`bool`, defaults to True): Whether to use a bias in the linear layer.
     """
 
-    def __init__(self, dim_in: int, dim_out: int, bias: bool = True):
+    def __init__(
+        self, dim_in: int, dim_out: int, bias: bool = True, dtype: str = "float16"
+    ):
         super().__init__()
-        self.proj = nn.Linear(dim_in, dim_out * 2, bias=bias)
+        self.proj = nn.Linear(dim_in, dim_out * 2, bias=bias, dtype=dtype)
 
     def gelu(self, gate: Tensor) -> Tensor:
         return ops.gelu(gate)
@@ -103,9 +116,11 @@ class ApproximateGELU(nn.Module):
         bias (`bool`, defaults to True): Whether to use a bias in the linear layer.
     """
 
-    def __init__(self, dim_in: int, dim_out: int, bias: bool = True):
+    def __init__(
+        self, dim_in: int, dim_out: int, bias: bool = True, dtype: str = "float16"
+    ):
         super().__init__()
-        self.proj = nn.Linear(dim_in, dim_out, bias=bias)
+        self.proj = nn.Linear(dim_in, dim_out, bias=bias, dtype=dtype)
 
     def forward(self, x: Tensor) -> Tensor:
         x = self.proj(x)
