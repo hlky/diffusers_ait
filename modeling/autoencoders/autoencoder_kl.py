@@ -71,6 +71,7 @@ class AutoencoderKL(nn.Module):
         force_upcast: float = True,
         use_quant_conv: bool = True,
         use_post_quant_conv: bool = True,
+        dtype: str = "float16",
     ):
         super().__init__()
 
@@ -84,6 +85,7 @@ class AutoencoderKL(nn.Module):
             act_fn=act_fn,
             norm_num_groups=norm_num_groups,
             double_z=True,
+            dtype=dtype,
         )
 
         # pass init params to Decoder
@@ -95,15 +97,26 @@ class AutoencoderKL(nn.Module):
             layers_per_block=layers_per_block,
             norm_num_groups=norm_num_groups,
             act_fn=act_fn,
+            dtype=dtype,
         )
 
         self.quant_conv = (
-            nn.Conv2d(2 * latent_channels, 2 * latent_channels, 1)
+            nn.Conv2dBias(
+                2 * latent_channels,
+                2 * latent_channels,
+                1,
+                dtype=dtype,
+            )
             if use_quant_conv
             else None
         )
         self.post_quant_conv = (
-            nn.Conv2d(latent_channels, latent_channels, 1)
+            nn.Conv2dBias(
+                latent_channels,
+                latent_channels,
+                1,
+                dtype=dtype,
+            )
             if use_post_quant_conv
             else None
         )
@@ -112,14 +125,9 @@ class AutoencoderKL(nn.Module):
         self.use_tiling = False
 
         # only relevant if vae tiling is enabled
-        self.tile_sample_min_size = self.config.sample_size
-        sample_size = (
-            self.config.sample_size[0]
-            if isinstance(self.config.sample_size, (list, tuple))
-            else self.config.sample_size
-        )
+        self.tile_sample_min_size = sample_size
         self.tile_latent_min_size = int(
-            sample_size / (2 ** (len(self.config.block_out_channels) - 1))
+            sample_size / (2 ** (len(block_out_channels) - 1))
         )
         self.tile_overlap_factor = 0.25
 
@@ -205,14 +213,14 @@ class AutoencoderKL(nn.Module):
                 [`~models.autoencoder_kl.AutoencoderKLOutput`] is returned, otherwise a plain `tuple` is returned.
         """
         if self.use_tiling and (
-            x.shape[-1] > self.tile_sample_min_size
-            or x.shape[-2] > self.tile_sample_min_size
+            ops.size()(x, dim=1) > self.tile_sample_min_size
+            or ops.size()(x, dim=2) > self.tile_sample_min_size
         ):
             return self.tiled_encode(x, return_dict=return_dict)
 
-        if self.use_slicing and x.shape[0] > 1:
-            encoded_slices = [self.encoder(x_slice) for x_slice in x.split(1)]
-            h = torch.cat(encoded_slices)
+        if self.use_slicing and ops.size()(x, dim=0) > 1:
+            encoded_slices = [self.encoder(x_slice) for x_slice in ops.split()(x, 1)]
+            h = ops.concatenate()(encoded_slices)
         else:
             h = self.encoder(x)
 
@@ -232,8 +240,8 @@ class AutoencoderKL(nn.Module):
         self, z: Tensor, return_dict: bool = True
     ) -> Union[DecoderOutput, Tensor]:
         if self.use_tiling and (
-            z.shape[-1] > self.tile_latent_min_size
-            or z.shape[-2] > self.tile_latent_min_size
+            ops.size()(z, dim=1) > self.tile_sample_min_size
+            or ops.size()(z, dim=2) > self.tile_sample_min_size
         ):
             return self.tiled_decode(z, return_dict=return_dict)
 
@@ -264,9 +272,11 @@ class AutoencoderKL(nn.Module):
                 returned.
 
         """
-        if self.use_slicing and z.shape[0] > 1:
-            decoded_slices = [self._decode(z_slice).sample for z_slice in z.split(1)]
-            decoded = torch.cat(decoded_slices)
+        if self.use_slicing and ops.size()(z, dim=0) > 1:
+            decoded_slices = [
+                self._decode(z_slice).sample for z_slice in ops.split()(z, 1)
+            ]
+            decoded = ops.concatenate()(decoded_slices)
         else:
             decoded = self._decode(z).sample
 
@@ -316,15 +326,19 @@ class AutoencoderKL(nn.Module):
 
         # Split the image into 512x512 tiles and encode them separately.
         rows = []
-        for i in range(0, x.shape[2], overlap_size):
+        for i in range(0, ops.size()(x, dim=1), overlap_size):
             row = []
-            for j in range(0, x.shape[3], overlap_size):
-                tile = x[
-                    :,
-                    :,
-                    i : i + self.tile_sample_min_size,
-                    j : j + self.tile_sample_min_size,
-                ]
+            for j in range(0, ops.size()(x, dim=2), overlap_size):
+                tile = ops.dynamic_slice()(
+                    x,
+                    start_indices=[0, i, j, 0],
+                    end_indices=[
+                        None,
+                        i + self.tile_sample_min_size,
+                        j + self.tile_sample_min_size,
+                        None,
+                    ],
+                )
                 tile = self.encoder(tile)
                 tile = self.quant_conv(tile)
                 row.append(tile)
@@ -340,9 +354,9 @@ class AutoencoderKL(nn.Module):
                 if j > 0:
                     tile = self.blend_h(row[j - 1], tile, blend_extent)
                 result_row.append(tile[:, :, :row_limit, :row_limit])
-            result_rows.append(torch.cat(result_row, dim=3))
+            result_rows.append(ops.concatenate()(result_row, dim=2))
 
-        moments = torch.cat(result_rows, dim=2)
+        moments = ops.concatenate()(result_rows, dim=1)
         posterior = DiagonalGaussianDistribution(moments)
 
         if not return_dict:
@@ -397,9 +411,9 @@ class AutoencoderKL(nn.Module):
                 if j > 0:
                     tile = self.blend_h(row[j - 1], tile, blend_extent)
                 result_row.append(tile[:, :, :row_limit, :row_limit])
-            result_rows.append(torch.cat(result_row, dim=3))
+            result_rows.append(ops.concatenate()(result_row, dim=2))
 
-        dec = torch.cat(result_rows, dim=2)
+        dec = ops.concatenate()(result_rows, dim=1)
         if not return_dict:
             return (dec,)
 

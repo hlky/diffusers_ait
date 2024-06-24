@@ -18,18 +18,26 @@ class TemporalDecoder(nn.Module):
         out_channels: int = 3,
         block_out_channels: Tuple[int] = (128, 256, 512, 512),
         layers_per_block: int = 2,
+        dtype: str = "float16",
     ):
         super().__init__()
+        self.dtype = dtype
         self.layers_per_block = layers_per_block
 
-        self.conv_in = nn.Conv2d(
-            in_channels, block_out_channels[-1], kernel_size=3, stride=1, padding=1
+        self.conv_in = nn.Conv2dBias(
+            in_channels,
+            block_out_channels[-1],
+            kernel_size=3,
+            stride=1,
+            padding=1,
+            dtype=dtype,
         )
         self.mid_block = MidBlockTemporalDecoder(
             num_layers=self.layers_per_block,
             in_channels=block_out_channels[-1],
             out_channels=block_out_channels[-1],
             attention_head_dim=block_out_channels[-1],
+            dtype=dtype,
         )
 
         # up
@@ -46,12 +54,13 @@ class TemporalDecoder(nn.Module):
                 in_channels=prev_output_channel,
                 out_channels=output_channel,
                 add_upsample=not is_final_block,
+                dtype=dtype,
             )
             self.up_blocks.append(up_block)
             prev_output_channel = output_channel
 
         self.conv_norm_out = nn.GroupNorm(
-            num_channels=block_out_channels[0], num_groups=32, eps=1e-6
+            num_channels=block_out_channels[0], num_groups=32, eps=1e-6, dtype=dtype
         )
 
         self.conv_act = ops.silu
@@ -60,6 +69,7 @@ class TemporalDecoder(nn.Module):
             out_channels=out_channels,
             kernel_size=3,
             padding=1,
+            dtype=dtype,
         )
 
         conv_out_kernel_size = (3, 1, 1)
@@ -69,6 +79,7 @@ class TemporalDecoder(nn.Module):
             out_channels=out_channels,
             kernel_size=conv_out_kernel_size,
             padding=padding,
+            dtype=dtype,
         )
 
         self.gradient_checkpointing = False
@@ -83,10 +94,10 @@ class TemporalDecoder(nn.Module):
 
         sample = self.conv_in(sample)
 
-        upscale_dtype = next(iter(self.up_blocks.parameters())).dtype
+        upscale_dtype = self.dtype  # next(iter(self.up_blocks.parameters())).dtype
         # middle
         sample = self.mid_block(sample, image_only_indicator=image_only_indicator)
-        sample = sample.to(upscale_dtype)
+        sample = ops.cast()(sample, upscale_dtype)
 
         # up
         for up_block in self.up_blocks:
@@ -97,18 +108,14 @@ class TemporalDecoder(nn.Module):
         sample = self.conv_act(sample)
         sample = self.conv_out(sample)
 
-        batch_frames, channels, height, width = sample.shape
-        batch_size = batch_frames // num_frames
-        sample = (
-            sample[None, :]
-            .reshape(batch_size, num_frames, channels, height, width)
-            .permute(0, 2, 1, 3, 4)
+        batch_frames, height, width, channels = ops.size()(sample)
+        batch_size = batch_frames / num_frames
+        sample = ops.reshape()(
+            ops.unsqueeze(0)(sample), [batch_size, num_frames, height, width, channels]
         )
         sample = self.time_conv_out(sample)
 
-        sample = sample.permute(0, 2, 1, 3, 4).reshape(
-            batch_frames, channels, height, width
-        )
+        sample = ops.reshape()(sample, [batch_frames, height, width, channels])
 
         return sample
 
@@ -156,6 +163,7 @@ class AutoencoderKLTemporalDecoder(nn.Module):
         sample_size: int = 32,
         scaling_factor: float = 0.18215,
         force_upcast: float = True,
+        dtype: str = "float16",
     ):
         super().__init__()
 
@@ -167,6 +175,7 @@ class AutoencoderKLTemporalDecoder(nn.Module):
             block_out_channels=block_out_channels,
             layers_per_block=layers_per_block,
             double_z=True,
+            dtype=dtype,
         )
 
         # pass init params to Decoder
@@ -175,17 +184,15 @@ class AutoencoderKLTemporalDecoder(nn.Module):
             out_channels=out_channels,
             block_out_channels=block_out_channels,
             layers_per_block=layers_per_block,
+            dtype=dtype,
         )
 
-        self.quant_conv = nn.Conv2d(2 * latent_channels, 2 * latent_channels, 1)
-
-        sample_size = (
-            self.config.sample_size[0]
-            if isinstance(self.config.sample_size, (list, tuple))
-            else self.config.sample_size
+        self.quant_conv = nn.Conv2dBias(
+            2 * latent_channels, 2 * latent_channels, 1, dtype=dtype
         )
+
         self.tile_latent_min_size = int(
-            sample_size / (2 ** (len(self.config.block_out_channels) - 1))
+            sample_size / (2 ** (len(block_out_channels) - 1))
         )
         self.tile_overlap_factor = 0.25
 
@@ -272,9 +279,9 @@ class AutoencoderKLTemporalDecoder(nn.Module):
                 returned.
 
         """
-        batch_size = z.shape[0] // num_frames
-        image_only_indicator = torch.zeros(
-            batch_size, num_frames, dtype=z.dtype, device=z.device
+        batch_size = ops.size()(z, dim=0) / num_frames
+        image_only_indicator = ops.full()(
+            [batch_size, num_frames], fill_value=0.0, dtype=z.dtype()
         )
         decoded = self.decoder(
             z, num_frames=num_frames, image_only_indicator=image_only_indicator

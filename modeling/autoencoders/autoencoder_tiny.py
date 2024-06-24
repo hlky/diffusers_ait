@@ -96,6 +96,7 @@ class AutoencoderTiny(nn.Module):
         force_upcast: bool = False,
         scaling_factor: float = 1.0,
         shift_factor: float = 0.0,
+        dtype: str = "float16",
     ):
         super().__init__()
 
@@ -114,6 +115,7 @@ class AutoencoderTiny(nn.Module):
             num_blocks=num_encoder_blocks,
             block_out_channels=encoder_block_out_channels,
             act_fn=act_fn,
+            dtype=dtype,
         )
 
         self.decoder = DecoderTiny(
@@ -124,6 +126,7 @@ class AutoencoderTiny(nn.Module):
             upsampling_scaling_factor=upsampling_scaling_factor,
             act_fn=act_fn,
             upsample_fn=upsample_fn,
+            dtype=dtype,
         )
 
         self.latent_magnitude = latent_magnitude
@@ -141,16 +144,15 @@ class AutoencoderTiny(nn.Module):
             self.tile_sample_min_size // self.spatial_scale_factor
         )
 
-        self.register_to_config(block_out_channels=decoder_block_out_channels)
-        self.register_to_config(force_upcast=False)
-
     def scale_latents(self, x: Tensor) -> Tensor:
         """raw latents -> [0, 1]"""
-        return x.div(2 * self.latent_magnitude).add(self.latent_shift).clamp(0, 1)
+        return ops.clamp()(
+            (x / (2 * self.latent_magnitude)) + self.latent_shift, 0.0, 1.0
+        )
 
     def unscale_latents(self, x: Tensor) -> Tensor:
         """[0, 1] -> raw latents"""
-        return x.sub(self.latent_shift).mul(2 * self.latent_magnitude)
+        return (x - self.latent_shift) * (2 * self.latent_magnitude)
 
     def enable_slicing(self) -> None:
         r"""
@@ -182,6 +184,7 @@ class AutoencoderTiny(nn.Module):
         self.enable_tiling(False)
 
     def _tiled_encode(self, x: Tensor) -> Tensor:
+        raise NotImplementedError("meshgrid")
         r"""Encode a batch of images using a tiled encoder.
 
         When this option is enabled, the VAE will split the input tensor into tiles to compute encoding in several
@@ -243,6 +246,7 @@ class AutoencoderTiny(nn.Module):
         return out
 
     def _tiled_decode(self, x: Tensor) -> Tensor:
+        raise NotImplementedError("meshgrid")
         r"""Encode a batch of images using a tiled encoder.
 
         When this option is enabled, the VAE will split the input tensor into tiles to compute encoding in several
@@ -303,16 +307,16 @@ class AutoencoderTiny(nn.Module):
     def encode(
         self, x: Tensor, return_dict: bool = True
     ) -> Union[AutoencoderTinyOutput, Tuple[Tensor]]:
-        if self.use_slicing and x.shape[0] > 1:
+        if self.use_slicing and ops.size()(x, dim=0) > 1:
             output = [
                 (
                     self._tiled_encode(x_slice)
                     if self.use_tiling
                     else self.encoder(x_slice)
                 )
-                for x_slice in x.split(1)
+                for x_slice in ops.split()(x, 1)
             ]
-            output = torch.cat(output)
+            output = ops.concatenate()(output)
         else:
             output = self._tiled_encode(x) if self.use_tiling else self.encoder(x)
 
@@ -324,12 +328,12 @@ class AutoencoderTiny(nn.Module):
     def decode(
         self, x: Tensor, generator=None, return_dict: bool = True
     ) -> Union[DecoderOutput, Tuple[Tensor]]:
-        if self.use_slicing and x.shape[0] > 1:
+        if self.use_slicing and ops.size()(x, dim=0) > 1:
             output = [
                 self._tiled_decode(x_slice) if self.use_tiling else self.decoder(x)
-                for x_slice in x.split(1)
+                for x_slice in ops.split()(x, 1)
             ]
-            output = torch.cat(output)
+            output = ops.concatenate()(output)
         else:
             output = self._tiled_decode(x) if self.use_tiling else self.decoder(x)
 

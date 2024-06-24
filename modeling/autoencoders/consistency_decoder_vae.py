@@ -123,8 +123,9 @@ class ConsistencyDecoderVAE(nn.Module):
             up_block_types=decoder_up_block_types,
         )
         self.decoder_scheduler = ConsistencyDecoderScheduler()
-        self.register_to_config(block_out_channels=encoder_block_out_channels)
-        self.register_to_config(force_upcast=False)
+        self.scaling_factor = scaling_factor
+        self.encoder_block_out_channels = encoder_block_out_channels
+        self.decoder_block_out_channels = decoder_block_out_channels
         self.register_buffer(
             "means",
             torch.tensor([0.38862467, 0.02253063, 0.07381133, -0.0171294])[
@@ -140,20 +141,15 @@ class ConsistencyDecoderVAE(nn.Module):
             persistent=False,
         )
 
-        self.quant_conv = nn.Conv2d(2 * latent_channels, 2 * latent_channels, 1)
+        self.quant_conv = nn.Conv2dBias(2 * latent_channels, 2 * latent_channels, 1)
 
         self.use_slicing = False
         self.use_tiling = False
 
         # only relevant if vae tiling is enabled
-        self.tile_sample_min_size = self.config.sample_size
-        sample_size = (
-            self.config.sample_size[0]
-            if isinstance(self.config.sample_size, (list, tuple))
-            else self.config.sample_size
-        )
+        self.tile_sample_min_size = sample_size
         self.tile_latent_min_size = int(
-            sample_size / (2 ** (len(self.config.block_out_channels) - 1))
+            sample_size / (2 ** (len(encoder_block_out_channels) - 1))
         )
         self.tile_overlap_factor = 0.25
 
@@ -245,14 +241,14 @@ class ConsistencyDecoderVAE(nn.Module):
                 plain `tuple` is returned.
         """
         if self.use_tiling and (
-            x.shape[-1] > self.tile_sample_min_size
-            or x.shape[-2] > self.tile_sample_min_size
+            ops.size()(x, dim=1) > self.tile_sample_min_size
+            or ops.size()(x, dim=2) > self.tile_sample_min_size
         ):
             return self.tiled_encode(x, return_dict=return_dict)
 
-        if self.use_slicing and x.shape[0] > 1:
-            encoded_slices = [self.encoder(x_slice) for x_slice in x.split(1)]
-            h = torch.cat(encoded_slices)
+        if self.use_slicing and ops.size()(x, dim=0) > 1:
+            encoded_slices = [self.encoder(x_slice) for x_slice in ops.split()(x, 1)]
+            h = ops.concatenate()(encoded_slices)
         else:
             h = self.encoder(x)
 
@@ -284,12 +280,14 @@ class ConsistencyDecoderVAE(nn.Module):
             Union[DecoderOutput, Tuple[Tensor]]: The decoded output.
 
         """
-        z = (z * self.config.scaling_factor - self.means) / self.stds
+        z = (z * self.scaling_factor - self.means) / self.stds
 
-        scale_factor = 2 ** (len(self.config.block_out_channels) - 1)
-        z = F.interpolate(z, mode="nearest", scale_factor=scale_factor)
+        scale_factor = 2 ** (len(self.decoder_block_out_channels) - 1)
+        z = ops.upsampling2d(scale_factor=scale_factor, mode="nearest")(z)
 
-        batch_size, _, height, width = z.shape
+        batch_size, height, width, _ = ops.size()(z)
+
+        raise NotImplementedError("ConsistencyDecoderScheduler")
 
         self.decoder_scheduler.set_timesteps(num_inference_steps, device=self.device)
 
@@ -363,15 +361,19 @@ class ConsistencyDecoderVAE(nn.Module):
 
         # Split the image into 512x512 tiles and encode them separately.
         rows = []
-        for i in range(0, x.shape[2], overlap_size):
+        for i in range(0, ops.size()(x, dim=1), overlap_size):
             row = []
-            for j in range(0, x.shape[3], overlap_size):
-                tile = x[
-                    :,
-                    :,
-                    i : i + self.tile_sample_min_size,
-                    j : j + self.tile_sample_min_size,
-                ]
+            for j in range(0, ops.size()(x, dim=2), overlap_size):
+                tile = ops.dynamic_slice()(
+                    x,
+                    start_indices=[0, i, j, 0],
+                    end_indices=[
+                        None,
+                        i + self.tile_sample_min_size,
+                        j + self.tile_sample_min_size,
+                        None,
+                    ],
+                )
                 tile = self.encoder(tile)
                 tile = self.quant_conv(tile)
                 row.append(tile)
@@ -387,9 +389,9 @@ class ConsistencyDecoderVAE(nn.Module):
                 if j > 0:
                     tile = self.blend_h(row[j - 1], tile, blend_extent)
                 result_row.append(tile[:, :, :row_limit, :row_limit])
-            result_rows.append(torch.cat(result_row, dim=3))
+            result_rows.append(ops.concatenate()(result_row, dim=2))
 
-        moments = torch.cat(result_rows, dim=2)
+        moments = ops.concatenate()(result_rows, dim=1)
         posterior = DiagonalGaussianDistribution(moments)
 
         if not return_dict:

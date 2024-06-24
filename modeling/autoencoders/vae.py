@@ -8,7 +8,6 @@ from aitemplate.compiler import ops
 from aitemplate.frontend import nn, Tensor
 
 from ...utils import BaseOutput
-from ...utils.torch_utils import randn_tensor
 from ..activations import get_activation
 from ..attention_processor import SpatialNorm
 from ..unets.unet_2d_blocks import (
@@ -17,6 +16,11 @@ from ..unets.unet_2d_blocks import (
     get_up_block,
     UNetMidBlock2D,
 )
+
+
+def get_shape(x):
+    shape = [it.value() for it in x._attrs["shape"]]
+    return shape
 
 
 @dataclass
@@ -68,16 +72,18 @@ class Encoder(nn.Module):
         act_fn: str = "silu",
         double_z: bool = True,
         mid_block_add_attention=True,
+        dtype: str = "float16",
     ):
         super().__init__()
         self.layers_per_block = layers_per_block
 
-        self.conv_in = nn.Conv2d(
+        self.conv_in = nn.Conv2dBias(
             in_channels,
             block_out_channels[0],
             kernel_size=3,
             stride=1,
             padding=1,
+            dtype=dtype,
         )
 
         self.down_blocks = nn.ModuleList([])
@@ -101,6 +107,7 @@ class Encoder(nn.Module):
                 resnet_groups=norm_num_groups,
                 attention_head_dim=output_channel,
                 temb_channels=None,
+                dtype=dtype,
             )
             self.down_blocks.append(down_block)
 
@@ -115,17 +122,21 @@ class Encoder(nn.Module):
             resnet_groups=norm_num_groups,
             temb_channels=None,
             add_attention=mid_block_add_attention,
+            dtype=dtype,
         )
 
         # out
         self.conv_norm_out = nn.GroupNorm(
-            num_channels=block_out_channels[-1], num_groups=norm_num_groups, eps=1e-6
+            num_channels=block_out_channels[-1],
+            num_groups=norm_num_groups,
+            eps=1e-6,
+            dtype=dtype,
         )
-        self.conv_act = nn.SiLU()
+        self.conv_act = ops.silu
 
         conv_out_channels = 2 * out_channels if double_z else out_channels
-        self.conv_out = nn.Conv2d(
-            block_out_channels[-1], conv_out_channels, 3, padding=1
+        self.conv_out = nn.Conv2dBias(
+            block_out_channels[-1], conv_out_channels, 3, padding=1, dtype=dtype
         )
 
         self.gradient_checkpointing = False
@@ -184,16 +195,18 @@ class Decoder(nn.Module):
         act_fn: str = "silu",
         norm_type: str = "group",  # group, spatial
         mid_block_add_attention=True,
+        dtype: str = "float16",
     ):
         super().__init__()
         self.layers_per_block = layers_per_block
 
-        self.conv_in = nn.Conv2d(
+        self.conv_in = nn.Conv2dBias(
             in_channels,
             block_out_channels[-1],
             kernel_size=3,
             stride=1,
             padding=1,
+            dtype=dtype,
         )
 
         self.up_blocks = nn.ModuleList([])
@@ -211,6 +224,7 @@ class Decoder(nn.Module):
             resnet_groups=norm_num_groups,
             temb_channels=temb_channels,
             add_attention=mid_block_add_attention,
+            dtype=dtype,
         )
 
         # up
@@ -235,19 +249,27 @@ class Decoder(nn.Module):
                 attention_head_dim=output_channel,
                 temb_channels=temb_channels,
                 resnet_time_scale_shift=norm_type,
+                dtype=dtype,
             )
             self.up_blocks.append(up_block)
             prev_output_channel = output_channel
 
         # out
         if norm_type == "spatial":
-            self.conv_norm_out = SpatialNorm(block_out_channels[0], temb_channels)
+            self.conv_norm_out = SpatialNorm(
+                block_out_channels[0], temb_channels, dtype=dtype
+            )
         else:
             self.conv_norm_out = nn.GroupNorm(
-                num_channels=block_out_channels[0], num_groups=norm_num_groups, eps=1e-6
+                num_channels=block_out_channels[0],
+                num_groups=norm_num_groups,
+                eps=1e-6,
+                dtype=dtype,
             )
-        self.conv_act = nn.SiLU()
-        self.conv_out = nn.Conv2d(block_out_channels[0], out_channels, 3, padding=1)
+        self.conv_act = ops.silu
+        self.conv_out = nn.Conv2d(
+            block_out_channels[0], out_channels, 3, padding=1, dtype=dtype
+        )
 
         self.gradient_checkpointing = False
 
@@ -260,10 +282,8 @@ class Decoder(nn.Module):
 
         sample = self.conv_in(sample)
 
-        upscale_dtype = next(iter(self.up_blocks.parameters())).dtype
         # middle
         sample = self.mid_block(sample, latent_embeds)
-        sample = sample.to(upscale_dtype)
 
         # up
         for up_block in self.up_blocks:
@@ -295,17 +315,18 @@ class UpSample(nn.Module):
         self,
         in_channels: int,
         out_channels: int,
+        dtype: str = "float16",
     ) -> None:
         super().__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
-        self.deconv = nn.ConvTranspose2d(
-            in_channels, out_channels, kernel_size=4, stride=2, padding=1
+        self.deconv = nn.ConvTranspose2dBias(
+            in_channels, out_channels, kernel_size=4, stride=2, padding=1, dtype=dtype
         )
 
     def forward(self, x: Tensor) -> Tensor:
         r"""The forward method of the `UpSample` class."""
-        x = torch.relu(x)
+        x = ops.relu(x)
         x = self.deconv(x)
         return x
 
@@ -321,6 +342,7 @@ class MaskConditionEncoder(nn.Module):
         out_ch: int = 192,
         res_ch: int = 768,
         stride: int = 16,
+        dtype: str = "float16",
     ) -> None:
         super().__init__()
 
@@ -346,11 +368,15 @@ class MaskConditionEncoder(nn.Module):
             out_ch_ = out_channels[l]
             if l == 0 or l == 1:
                 layers.append(
-                    nn.Conv2d(in_ch_, out_ch_, kernel_size=3, stride=1, padding=1)
+                    nn.Conv2dBias(
+                        in_ch_, out_ch_, kernel_size=3, stride=1, padding=1, dtype=dtype
+                    )
                 )
             else:
                 layers.append(
-                    nn.Conv2d(in_ch_, out_ch_, kernel_size=4, stride=2, padding=1)
+                    nn.Conv2dBias(
+                        in_ch_, out_ch_, kernel_size=4, stride=2, padding=1, dtype=dtype
+                    )
                 )
             in_ch_ = out_ch_
 
@@ -362,8 +388,8 @@ class MaskConditionEncoder(nn.Module):
         for l in range(len(self.layers)):
             layer = self.layers[l]
             x = layer(x)
-            out[str(tuple(x.shape))] = x
-            x = torch.relu(x)
+            out[str(tuple(get_shape(x)))] = x
+            x = ops.relu(x)
         return out
 
 
@@ -400,16 +426,18 @@ class MaskConditionDecoder(nn.Module):
         norm_num_groups: int = 32,
         act_fn: str = "silu",
         norm_type: str = "group",  # group, spatial
+        dtype: str = "float16",
     ):
         super().__init__()
         self.layers_per_block = layers_per_block
 
-        self.conv_in = nn.Conv2d(
+        self.conv_in = nn.Conv2dBias(
             in_channels,
             block_out_channels[-1],
             kernel_size=3,
             stride=1,
             padding=1,
+            dtype=dtype,
         )
 
         self.up_blocks = nn.ModuleList([])
@@ -426,6 +454,7 @@ class MaskConditionDecoder(nn.Module):
             attention_head_dim=block_out_channels[-1],
             resnet_groups=norm_num_groups,
             temb_channels=temb_channels,
+            dtype=dtype,
         )
 
         # up
@@ -450,6 +479,7 @@ class MaskConditionDecoder(nn.Module):
                 attention_head_dim=output_channel,
                 temb_channels=temb_channels,
                 resnet_time_scale_shift=norm_type,
+                dtype=dtype,
             )
             self.up_blocks.append(up_block)
             prev_output_channel = output_channel
@@ -459,17 +489,25 @@ class MaskConditionDecoder(nn.Module):
             in_ch=out_channels,
             out_ch=block_out_channels[0],
             res_ch=block_out_channels[-1],
+            dtype=dtype,
         )
 
         # out
         if norm_type == "spatial":
-            self.conv_norm_out = SpatialNorm(block_out_channels[0], temb_channels)
+            self.conv_norm_out = SpatialNorm(
+                block_out_channels[0], temb_channels, dtype=dtype
+            )
         else:
             self.conv_norm_out = nn.GroupNorm(
-                num_channels=block_out_channels[0], num_groups=norm_num_groups, eps=1e-6
+                num_channels=block_out_channels[0],
+                num_groups=norm_num_groups,
+                eps=1e-6,
+                dtype=dtype,
             )
-        self.conv_act = nn.SiLU()
-        self.conv_out = nn.Conv2d(block_out_channels[0], out_channels, 3, padding=1)
+        self.conv_act = ops.silu
+        self.conv_out = nn.Conv2dBias(
+            block_out_channels[0], out_channels, 3, padding=1, dtype=dtype
+        )
 
         self.gradient_checkpointing = False
 
@@ -484,11 +522,8 @@ class MaskConditionDecoder(nn.Module):
         sample = z
         sample = self.conv_in(sample)
 
-        upscale_dtype = next(iter(self.up_blocks.parameters())).dtype
-
         # middle
         sample = self.mid_block(sample, latent_embeds)
-        sample = sample.to(upscale_dtype)
 
         # condition encoder
         if image is not None and mask is not None:
@@ -537,17 +572,18 @@ class VectorQuantizer(nn.Module):
         sane_index_shape: bool = False,
         legacy: bool = True,
     ):
+        raise NotImplementedError("")
         super().__init__()
         self.n_e = n_e
         self.vq_embed_dim = vq_embed_dim
         self.beta = beta
         self.legacy = legacy
 
-        self.embedding = nn.Embedding(self.n_e, self.vq_embed_dim)
-        self.embedding.weight.data.uniform_(-1.0 / self.n_e, 1.0 / self.n_e)
+        self.embedding = nn.Embedding([self.n_e, self.vq_embed_dim])
 
         self.remap = remap
         if self.remap is not None:
+            raise NotImplementedError("")
             self.register_buffer("used", torch.tensor(np.load(self.remap)))
             self.used: Tensor
             self.re_embed = self.used.shape[0]
@@ -565,6 +601,7 @@ class VectorQuantizer(nn.Module):
         self.sane_index_shape = sane_index_shape
 
     def remap_to_used(self, inds: Tensor) -> Tensor:
+        raise NotImplementedError("")
         ishape = inds.shape
         assert len(ishape) > 1
         inds = inds.reshape(ishape[0], -1)
@@ -581,6 +618,7 @@ class VectorQuantizer(nn.Module):
         return new.reshape(ishape)
 
     def unmap_to_all(self, inds: Tensor) -> Tensor:
+        raise NotImplementedError("")
         ishape = inds.shape
         assert len(ishape) > 1
         inds = inds.reshape(ishape[0], -1)
@@ -591,6 +629,7 @@ class VectorQuantizer(nn.Module):
         return back.reshape(ishape)
 
     def forward(self, z: Tensor) -> Tuple[Tensor, Tensor, Tuple]:
+        raise NotImplementedError("")
         # reshape z -> (batch, height, width, channel) and flatten
         z = z.permute(0, 2, 3, 1).contiguous()
         z_flattened = z.view(-1, self.vq_embed_dim)
@@ -635,6 +674,7 @@ class VectorQuantizer(nn.Module):
         return z_q, loss, (perplexity, min_encodings, min_encoding_indices)
 
     def get_codebook_entry(self, indices: Tensor, shape: Tuple[int, ...]) -> Tensor:
+        raise NotImplementedError("")
         # shape specifying (batch, height, width, channel)
         if self.remap is not None:
             indices = indices.reshape(shape[0], -1)  # add batch axis
@@ -655,14 +695,14 @@ class VectorQuantizer(nn.Module):
 class DiagonalGaussianDistribution(object):
     def __init__(self, parameters: Tensor, deterministic: bool = False):
         self.parameters = parameters
-        self.mean, self.logvar = torch.chunk(parameters, 2, dim=1)
-        self.logvar = torch.clamp(self.logvar, -30.0, 20.0)
+        self.mean, self.logvar = ops.chunk()(parameters, 2, dim=1)
+        self.logvar = ops.clamp()(self.logvar, -30.0, 20.0)
         self.deterministic = deterministic
-        self.std = torch.exp(0.5 * self.logvar)
-        self.var = torch.exp(self.logvar)
+        self.std = ops.exp(0.5 * self.logvar)
+        self.var = ops.exp(self.logvar)
         if self.deterministic:
-            self.var = self.std = torch.zeros_like(
-                self.mean, device=self.parameters.device, dtype=self.parameters.dtype
+            self.var = self.std = ops.full()(
+                ops.size()(self.mean), fill_value=0.0, dtype=self.parameters.dtype()
             )
 
     def sample(self, generator=None) -> Tensor:
@@ -677,6 +717,7 @@ class DiagonalGaussianDistribution(object):
         return x
 
     def kl(self, other: "DiagonalGaussianDistribution" = None) -> Tensor:
+        raise NotImplementedError("reduce_sum multiple reduction dim")
         if self.deterministic:
             return Tensor([0.0])
         else:
@@ -696,6 +737,7 @@ class DiagonalGaussianDistribution(object):
                 )
 
     def nll(self, sample: Tensor, dims: Tuple[int, ...] = [1, 2, 3]) -> Tensor:
+        raise NotImplementedError("reduce_sum multiple reduction dim")
         if self.deterministic:
             return Tensor([0.0])
         logtwopi = np.log(2.0 * np.pi)
@@ -733,6 +775,7 @@ class EncoderTiny(nn.Module):
         num_blocks: Tuple[int, ...],
         block_out_channels: Tuple[int, ...],
         act_fn: str,
+        dtype: str = "float16",
     ):
         super().__init__()
 
@@ -742,7 +785,9 @@ class EncoderTiny(nn.Module):
 
             if i == 0:
                 layers.append(
-                    nn.Conv2d(in_channels, num_channels, kernel_size=3, padding=1)
+                    nn.Conv2dBias(
+                        in_channels, num_channels, kernel_size=3, padding=1, dtype=dtype
+                    )
                 )
             else:
                 layers.append(
@@ -752,15 +797,25 @@ class EncoderTiny(nn.Module):
                         kernel_size=3,
                         padding=1,
                         stride=2,
-                        bias=False,
+                        dtype=dtype,
                     )
                 )
 
             for _ in range(num_block):
-                layers.append(AutoencoderTinyBlock(num_channels, num_channels, act_fn))
+                layers.append(
+                    AutoencoderTinyBlock(
+                        num_channels, num_channels, act_fn, dtype=dtype
+                    )
+                )
 
         layers.append(
-            nn.Conv2d(block_out_channels[-1], out_channels, kernel_size=3, padding=1)
+            nn.Conv2dBias(
+                block_out_channels[-1],
+                out_channels,
+                kernel_size=3,
+                padding=1,
+                dtype=dtype,
+            )
         )
 
         self.layers = nn.Sequential(*layers)
@@ -768,7 +823,7 @@ class EncoderTiny(nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
         r"""The forward method of the `EncoderTiny` class."""
-        x = self.layers(x.add(1).div(2))
+        x = self.layers((x + 1) / 2)
 
         return x
 
@@ -802,11 +857,18 @@ class DecoderTiny(nn.Module):
         upsampling_scaling_factor: int,
         act_fn: str,
         upsample_fn: str,
+        dtype: str = "float16",
     ):
         super().__init__()
 
         layers = [
-            nn.Conv2d(in_channels, block_out_channels[0], kernel_size=3, padding=1),
+            nn.Conv2dBias(
+                in_channels,
+                block_out_channels[0],
+                kernel_size=3,
+                padding=1,
+                dtype=dtype,
+            ),
             get_activation(act_fn),
         ]
 
@@ -826,12 +888,20 @@ class DecoderTiny(nn.Module):
 
             conv_out_channel = num_channels if not is_final_block else out_channels
             layers.append(
-                nn.Conv2d(
+                nn.Conv2dBias(
                     num_channels,
                     conv_out_channel,
                     kernel_size=3,
                     padding=1,
-                    bias=is_final_block,
+                    dtype=dtype,
+                )
+                if is_final_block
+                else nn.Conv2d(
+                    num_channels,
+                    conv_out_channel,
+                    kernel_size=3,
+                    padding=1,
+                    dtype=dtype,
                 )
             )
 
@@ -841,9 +911,9 @@ class DecoderTiny(nn.Module):
     def forward(self, x: Tensor) -> Tensor:
         r"""The forward method of the `DecoderTiny` class."""
         # Clamp.
-        x = torch.tanh(x / 3) * 3
+        x = ops.tanh(x / 3) * 3
 
         x = self.layers(x)
 
         # scale image from [0, 1] to [-1, 1] to match diffusers convention
-        return x.mul(2).sub(1)
+        return (x * 2) - 1

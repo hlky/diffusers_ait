@@ -66,6 +66,7 @@ class AsymmetricAutoencoderKL(nn.Module):
         norm_num_groups: int = 32,
         sample_size: int = 32,
         scaling_factor: float = 0.18215,
+        dtype: str = "float16",
     ) -> None:
         super().__init__()
 
@@ -79,6 +80,7 @@ class AsymmetricAutoencoderKL(nn.Module):
             act_fn=act_fn,
             norm_num_groups=norm_num_groups,
             double_z=True,
+            dtype=dtype,
         )
 
         # pass init params to Decoder
@@ -90,16 +92,21 @@ class AsymmetricAutoencoderKL(nn.Module):
             layers_per_block=layers_per_up_block,
             act_fn=act_fn,
             norm_num_groups=norm_num_groups,
+            dtype=dtype,
         )
 
-        self.quant_conv = nn.Conv2d(2 * latent_channels, 2 * latent_channels, 1)
-        self.post_quant_conv = nn.Conv2d(latent_channels, latent_channels, 1)
+        self.quant_conv = nn.Conv2dBias(
+            2 * latent_channels, 2 * latent_channels, 1, dtype=dtype
+        )
+        self.post_quant_conv = nn.Conv2dBias(
+            latent_channels,
+            latent_channels,
+            1,
+            dtype=dtype,
+        )
 
         self.use_slicing = False
         self.use_tiling = False
-
-        self.register_to_config(block_out_channels=up_block_out_channels)
-        self.register_to_config(force_upcast=False)
 
     def encode(
         self, x: Tensor, return_dict: bool = True
