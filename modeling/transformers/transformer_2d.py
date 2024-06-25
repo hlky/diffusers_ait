@@ -72,6 +72,7 @@ class Transformer2DModel(nn.Module):
         caption_channels: int = None,
         interpolation_scale: float = None,
         use_additional_conditions: Optional[bool] = None,
+        dtype: str = "float16",
     ):
         super().__init__()
 
@@ -143,6 +144,8 @@ class Transformer2DModel(nn.Module):
         self.in_channels = in_channels
         self.out_channels = in_channels if out_channels is None else out_channels
         self.gradient_checkpointing = False
+        self.dtype = dtype
+        self.sample_size = sample_size
 
         if use_additional_conditions is None:
             if norm_type == "ada_norm_single" and sample_size == 128:
@@ -168,12 +171,18 @@ class Transformer2DModel(nn.Module):
             num_channels=self.in_channels,
             eps=1e-6,
             affine=True,
+            dtype=self.dtype,
         )
         if self.use_linear_projection:
-            self.proj_in = nn.Linear(self.in_channels, self.inner_dim)
+            self.proj_in = nn.Linear(self.in_channels, self.inner_dim, dtype=self.dtype)
         else:
             self.proj_in = nn.Conv2dBias(
-                self.in_channels, self.inner_dim, kernel_size=1, stride=1, padding=0
+                self.in_channels,
+                self.inner_dim,
+                kernel_size=1,
+                stride=1,
+                padding=0,
+                dtype=self.dtype,
             )
 
         self.transformer_blocks = nn.ModuleList(
@@ -194,16 +203,24 @@ class Transformer2DModel(nn.Module):
                     norm_elementwise_affine=self.norm_elementwise_affine,
                     norm_eps=self.norm_eps,
                     attention_type=self.attention_type,
+                    dtype=self.dtype,
                 )
                 for _ in range(self.num_layers)
             ]
         )
 
         if self.use_linear_projection:
-            self.proj_out = nn.Linear(self.inner_dim, self.out_channels)
+            self.proj_out = nn.Linear(
+                self.inner_dim, self.out_channels, dtype=self.dtype
+            )
         else:
             self.proj_out = nn.Conv2dBias(
-                self.inner_dim, self.out_channels, kernel_size=1, stride=1, padding=0
+                self.inner_dim,
+                self.out_channels,
+                kernel_size=1,
+                stride=1,
+                padding=0,
+                dtype=self.dtype,
             )
 
     def _init_vectorized_inputs(self, norm_type):
@@ -223,6 +240,7 @@ class Transformer2DModel(nn.Module):
             embed_dim=self.inner_dim,
             height=self.height,
             width=self.width,
+            dtype=self.dtype,
         )
 
         self.transformer_blocks = nn.ModuleList(
@@ -243,13 +261,16 @@ class Transformer2DModel(nn.Module):
                     norm_elementwise_affine=self.norm_elementwise_affine,
                     norm_eps=self.norm_eps,
                     attention_type=self.attention_type,
+                    dtype=self.dtype,
                 )
                 for _ in range(self.num_layers)
             ]
         )
 
-        self.norm_out = nn.LayerNorm(self.inner_dim)
-        self.out = nn.Linear(self.inner_dim, self.num_vector_embeds - 1)
+        self.norm_out = nn.LayerNorm(self.inner_dim, dtype=self.dtype)
+        self.out = nn.Linear(
+            self.inner_dim, self.num_vector_embeds - 1, dtype=self.dtype
+        )
 
     def _init_patched_inputs(self, norm_type):
         assert (
@@ -271,6 +292,7 @@ class Transformer2DModel(nn.Module):
             in_channels=self.in_channels,
             embed_dim=self.inner_dim,
             interpolation_scale=interpolation_scale,
+            dtype=self.dtype,
         )
 
         self.transformer_blocks = nn.ModuleList(
@@ -291,6 +313,7 @@ class Transformer2DModel(nn.Module):
                     norm_elementwise_affine=self.norm_elementwise_affine,
                     norm_eps=self.norm_eps,
                     attention_type=self.attention_type,
+                    dtype=self.dtype,
                 )
                 for _ in range(self.num_layers)
             ]
@@ -298,21 +321,25 @@ class Transformer2DModel(nn.Module):
 
         if self.norm_type != "ada_norm_single":
             self.norm_out = nn.LayerNorm(
-                self.inner_dim, elementwise_affine=False, eps=1e-6
+                self.inner_dim, elementwise_affine=False, eps=1e-6, dtype=self.dtype
             )
-            self.proj_out_1 = nn.Linear(self.inner_dim, 2 * self.inner_dim)
+            self.proj_out_1 = nn.Linear(
+                self.inner_dim, 2 * self.inner_dim, dtype=self.dtype
+            )
             self.proj_out_2 = nn.Linear(
                 self.inner_dim,
                 self.patch_size * self.patch_size * self.out_channels,
+                dtype=self.dtype,
             )
         elif self.norm_type == "ada_norm_single":
             self.norm_out = nn.LayerNorm(
-                self.inner_dim, elementwise_affine=False, eps=1e-6
+                self.inner_dim, elementwise_affine=False, eps=1e-6, dtype=self.dtype
             )
-            self.scale_shift_table = nn.Parameter([2, self.inner_dim])
+            self.scale_shift_table = nn.Parameter([2, self.inner_dim], dtype=self.dtype)
             self.proj_out = nn.Linear(
                 self.inner_dim,
                 self.patch_size * self.patch_size * self.out_channels,
+                dtype=self.dtype,
             )
 
         # PixArt-Alpha blocks.
@@ -321,13 +348,17 @@ class Transformer2DModel(nn.Module):
             # TODO(Sayak, PVP) clean this, for now we use sample size to determine whether to use
             # additional conditions until we find better name
             self.adaln_single = AdaLayerNormSingle(
-                self.inner_dim, use_additional_conditions=self.use_additional_conditions
+                self.inner_dim,
+                use_additional_conditions=self.use_additional_conditions,
+                dtype=self.dtype,
             )
 
         self.caption_projection = None
         if self.caption_channels is not None:
             self.caption_projection = PixArtAlphaTextProjection(
-                in_features=self.caption_channels, hidden_size=self.inner_dim
+                in_features=self.caption_channels,
+                hidden_size=self.inner_dim,
+                dtype=self.dtype,
             )
 
     def forward(
@@ -389,7 +420,7 @@ class Transformer2DModel(nn.Module):
         # this helps to broadcast it as a bias over attention scores, which will be in one of the following shapes:
         #   [batch,  heads, query_tokens, key_tokens] (e.g. torch sdp attn)
         #   [batch * heads, query_tokens, key_tokens] (e.g. xformers or classic attn)
-        if attention_mask is not None and attention_mask.ndim == 2:
+        if attention_mask is not None and len(ops.size()(attention_mask)) == 2:
             # assume that mask is expressed as:
             #   (1 = keep,      0 = discard)
             # convert mask into a bias that can be added to attention scores:
@@ -400,7 +431,10 @@ class Transformer2DModel(nn.Module):
             attention_mask = ops.unsqueeze(1)(attention_mask)
 
         # convert encoder_attention_mask to a bias the same way we do for attention_mask
-        if encoder_attention_mask is not None and encoder_attention_mask.ndim == 2:
+        if (
+            encoder_attention_mask is not None
+            and len(ops.size()(encoder_attention_mask)) == 2
+        ):
             encoder_attention_mask = (
                 1 - ops.cast()(encoder_attention_mask, dtype=hidden_states.dtype())
             ) * -10000.0
@@ -498,7 +532,7 @@ class Transformer2DModel(nn.Module):
                 timestep,
                 added_cond_kwargs,
                 batch_size=batch_size,
-                hidden_dtype=hidden_states.dtype,
+                hidden_dtype=hidden_states.dtype(),
             )
 
         if self.caption_projection is not None:
