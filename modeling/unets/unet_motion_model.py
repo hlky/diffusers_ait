@@ -4,18 +4,7 @@ from aitemplate.compiler import ops
 
 from aitemplate.frontend import nn, Tensor
 
-from ...utils import logging
-from ..attention_processor import (
-    ADDED_KV_ATTENTION_PROCESSORS,
-    Attention,
-    AttentionProcessor,
-    AttnAddedKVProcessor,
-    AttnProcessor,
-    AttnProcessor2_0,
-    CROSS_ATTENTION_PROCESSORS,
-    IPAdapterAttnProcessor,
-    IPAdapterAttnProcessor2_0,
-)
+from ..attention_processor import AttentionProcessor
 from ..embeddings import TimestepEmbedding, Timesteps
 
 from ..transformers.transformer_temporal import TransformerTemporalModel
@@ -44,6 +33,7 @@ class MotionModules(nn.Module):
         activation_fn: str = "geglu",
         norm_num_groups: int = 32,
         max_seq_length: int = 32,
+        dtype: str = "float16",
     ):
         super().__init__()
         self.motion_modules = nn.ModuleList([])
@@ -60,6 +50,7 @@ class MotionModules(nn.Module):
                     attention_head_dim=in_channels // num_attention_heads,
                     positional_embeddings="sinusoidal",
                     num_positional_embeddings=max_seq_length,
+                    dtype=dtype,
                 )
             )
 
@@ -76,6 +67,7 @@ class MotionAdapter(nn.Module):
         motion_max_seq_length: int = 32,
         use_motion_mid_block: bool = True,
         conv_in_channels: Optional[int] = None,
+        dtype: str = "float16",
     ):
         """Container to store AnimateDiff Motion Modules
 
@@ -102,8 +94,12 @@ class MotionAdapter(nn.Module):
 
         if conv_in_channels:
             # input
-            self.conv_in = nn.Conv2d(
-                conv_in_channels, block_out_channels[0], kernel_size=3, padding=1
+            self.conv_in = nn.Conv2dBias(
+                conv_in_channels,
+                block_out_channels[0],
+                kernel_size=3,
+                padding=1,
+                dtype=dtype,
             )
         else:
             self.conv_in = None
@@ -120,6 +116,7 @@ class MotionAdapter(nn.Module):
                     num_attention_heads=motion_num_attention_heads,
                     max_seq_length=motion_max_seq_length,
                     layers_per_block=motion_layers_per_block,
+                    dtype=dtype,
                 )
             )
 
@@ -133,6 +130,7 @@ class MotionAdapter(nn.Module):
                 num_attention_heads=motion_num_attention_heads,
                 layers_per_block=motion_mid_block_layers_per_block,
                 max_seq_length=motion_max_seq_length,
+                dtype=dtype,
             )
         else:
             self.mid_block = None
@@ -151,6 +149,7 @@ class MotionAdapter(nn.Module):
                     num_attention_heads=motion_num_attention_heads,
                     max_seq_length=motion_max_seq_length,
                     layers_per_block=motion_layers_per_block + 1,
+                    dtype=dtype,
                 )
             )
 
@@ -210,10 +209,13 @@ class UNetMotionModel(nn.Module):
         addition_time_embed_dim: Optional[int] = None,
         projection_class_embeddings_input_dim: Optional[int] = None,
         time_cond_proj_dim: Optional[int] = None,
+        dtype: str = "float16",
     ):
         super().__init__()
 
         self.sample_size = sample_size
+        self.addition_embed_type = addition_embed_type
+        self.encoder_hid_dim_type = encoder_hid_dim_type
 
         # Check inputs
         if len(down_block_types) != len(up_block_types):
@@ -261,16 +263,17 @@ class UNetMotionModel(nn.Module):
         conv_in_kernel = 3
         conv_out_kernel = 3
         conv_in_padding = (conv_in_kernel - 1) // 2
-        self.conv_in = nn.Conv2d(
+        self.conv_in = nn.Conv2dBias(
             in_channels,
             block_out_channels[0],
             kernel_size=conv_in_kernel,
             padding=conv_in_padding,
+            dtype=dtype,
         )
 
         # time
         time_embed_dim = block_out_channels[0] * 4
-        self.time_proj = Timesteps(block_out_channels[0], True, 0)
+        self.time_proj = Timesteps(block_out_channels[0], True, 0, dtype=dtype)
         timestep_input_dim = block_out_channels[0]
 
         self.time_embedding = TimestepEmbedding(
@@ -278,15 +281,18 @@ class UNetMotionModel(nn.Module):
             time_embed_dim,
             act_fn=act_fn,
             cond_proj_dim=time_cond_proj_dim,
+            dtype=dtype,
         )
 
         if encoder_hid_dim_type is None:
             self.encoder_hid_proj = None
 
         if addition_embed_type == "text_time":
-            self.add_time_proj = Timesteps(addition_time_embed_dim, True, 0)
+            self.add_time_proj = Timesteps(
+                addition_time_embed_dim, True, 0, dtype=dtype
+            )
             self.add_embedding = TimestepEmbedding(
-                projection_class_embeddings_input_dim, time_embed_dim
+                projection_class_embeddings_input_dim, time_embed_dim, dtype=dtype
             )
 
         # class embedding
@@ -332,6 +338,7 @@ class UNetMotionModel(nn.Module):
                 temporal_num_attention_heads=motion_num_attention_heads,
                 temporal_max_seq_length=motion_max_seq_length,
                 transformer_layers_per_block=transformer_layers_per_block[i],
+                dtype=dtype,
             )
             self.down_blocks.append(down_block)
 
@@ -351,6 +358,7 @@ class UNetMotionModel(nn.Module):
                 temporal_num_attention_heads=motion_num_attention_heads,
                 temporal_max_seq_length=motion_max_seq_length,
                 transformer_layers_per_block=transformer_layers_per_block[-1],
+                dtype=dtype,
             )
 
         else:
@@ -366,6 +374,7 @@ class UNetMotionModel(nn.Module):
                 dual_cross_attention=False,
                 use_linear_projection=use_linear_projection,
                 transformer_layers_per_block=transformer_layers_per_block[-1],
+                dtype=dtype,
             )
 
         # count how many layers upsample the images
@@ -416,6 +425,7 @@ class UNetMotionModel(nn.Module):
                 temporal_num_attention_heads=motion_num_attention_heads,
                 temporal_max_seq_length=motion_max_seq_length,
                 transformer_layers_per_block=reversed_transformer_layers_per_block[i],
+                dtype=dtype,
             )
             self.up_blocks.append(up_block)
             prev_output_channel = output_channel
@@ -426,18 +436,20 @@ class UNetMotionModel(nn.Module):
                 num_channels=block_out_channels[0],
                 num_groups=norm_num_groups,
                 eps=norm_eps,
+                dtype=dtype,
             )
-            self.conv_act = nn.SiLU()
+            self.conv_act = ops.silu
         else:
             self.conv_norm_out = None
             self.conv_act = None
 
         conv_out_padding = (conv_out_kernel - 1) // 2
-        self.conv_out = nn.Conv2d(
+        self.conv_out = nn.Conv2dBias(
             block_out_channels[0],
             out_channels,
             kernel_size=conv_out_kernel,
             padding=conv_out_padding,
+            dtype=dtype,
         )
 
     # Copied from diffusers.models.unets.unet_2d_condition.UNet2DConditionModel.set_attn_processor
@@ -476,87 +488,6 @@ class UNetMotionModel(nn.Module):
 
         for name, module in self.named_children():
             fn_recursive_attn_processor(name, module, processor)
-
-    # Copied from diffusers.models.unets.unet_3d_condition.UNet3DConditionModel.enable_forward_chunking
-    def enable_forward_chunking(
-        self, chunk_size: Optional[int] = None, dim: int = 0
-    ) -> None:
-        """
-        Sets the attention processor to use [feed forward
-        chunking](https://huggingface.co/blog/reformer#2-chunked-feed-forward-layers).
-
-        Parameters:
-            chunk_size (`int`, *optional*):
-                The chunk size of the feed-forward layers. If not specified, will run feed-forward layer individually
-                over each tensor of dim=`dim`.
-            dim (`int`, *optional*, defaults to `0`):
-                The dimension over which the feed-forward computation should be chunked. Choose between dim=0 (batch)
-                or dim=1 (sequence length).
-        """
-        if dim not in [0, 1]:
-            raise ValueError(f"Make sure to set `dim` to either 0 or 1, not {dim}")
-
-        # By default chunk size is 1
-        chunk_size = chunk_size or 1
-
-        def fn_recursive_feed_forward(module: nn.Module, chunk_size: int, dim: int):
-            if hasattr(module, "set_chunk_feed_forward"):
-                module.set_chunk_feed_forward(chunk_size=chunk_size, dim=dim)
-
-            for child in module.children():
-                fn_recursive_feed_forward(child, chunk_size, dim)
-
-        for module in self.children():
-            fn_recursive_feed_forward(module, chunk_size, dim)
-
-    # Copied from diffusers.models.unets.unet_3d_condition.UNet3DConditionModel.disable_forward_chunking
-    def disable_forward_chunking(self) -> None:
-        def fn_recursive_feed_forward(module: nn.Module, chunk_size: int, dim: int):
-            if hasattr(module, "set_chunk_feed_forward"):
-                module.set_chunk_feed_forward(chunk_size=chunk_size, dim=dim)
-
-            for child in module.children():
-                fn_recursive_feed_forward(child, chunk_size, dim)
-
-        for module in self.children():
-            fn_recursive_feed_forward(module, None, 0)
-
-    # Copied from diffusers.models.unets.unet_2d_condition.UNet2DConditionModel.enable_freeu
-    def enable_freeu(self, s1: float, s2: float, b1: float, b2: float) -> None:
-        r"""Enables the FreeU mechanism from https://arxiv.org/abs/2309.11497.
-
-        The suffixes after the scaling factors represent the stage blocks where they are being applied.
-
-        Please refer to the [official repository](https://github.com/ChenyangSi/FreeU) for combinations of values that
-        are known to work well for different pipelines such as Stable Diffusion v1, v2, and Stable Diffusion XL.
-
-        Args:
-            s1 (`float`):
-                Scaling factor for stage 1 to attenuate the contributions of the skip features. This is done to
-                mitigate the "oversmoothing effect" in the enhanced denoising process.
-            s2 (`float`):
-                Scaling factor for stage 2 to attenuate the contributions of the skip features. This is done to
-                mitigate the "oversmoothing effect" in the enhanced denoising process.
-            b1 (`float`): Scaling factor for stage 1 to amplify the contributions of backbone features.
-            b2 (`float`): Scaling factor for stage 2 to amplify the contributions of backbone features.
-        """
-        for i, upsample_block in enumerate(self.up_blocks):
-            setattr(upsample_block, "s1", s1)
-            setattr(upsample_block, "s2", s2)
-            setattr(upsample_block, "b1", b1)
-            setattr(upsample_block, "b2", b2)
-
-    # Copied from diffusers.models.unets.unet_2d_condition.UNet2DConditionModel.disable_freeu
-    def disable_freeu(self) -> None:
-        """Disables the FreeU mechanism."""
-        freeu_keys = {"s1", "s2", "b1", "b2"}
-        for i, upsample_block in enumerate(self.up_blocks):
-            for k in freeu_keys:
-                if (
-                    hasattr(upsample_block, k)
-                    or getattr(upsample_block, k, None) is not None
-                ):
-                    setattr(upsample_block, k, None)
 
     def forward(
         self,
@@ -604,6 +535,7 @@ class UNetMotionModel(nn.Module):
                 If `return_dict` is True, an [`~models.unets.unet_3d_condition.UNet3DConditionOutput`] is returned,
                 otherwise a `tuple` is returned where the first element is the sample tensor.
         """
+        batch, frames, height, width, channel = ops.size()(sample)
         # By default samples have to be AT least a multiple of the overall upsampling factor.
         # The overall upsampling factor is equal to 2 ** (# num of upsampling layears).
         # However, the upsampling interpolation output size can be forced to fit any upsampling size
@@ -614,34 +546,41 @@ class UNetMotionModel(nn.Module):
         forward_upsample_size = False
         upsample_size = None
 
-        if any(s % default_overall_up_factor != 0 for s in sample.shape[-2:]):
-            forward_upsample_size = True
+        for dim in ops.size()(sample)[1:2]:
+            if dim % default_overall_up_factor != 0:
+                # Forward upsample size to force interpolation output size.
+                forward_upsample_size = True
+                break
 
         # prepare attention_mask
-        if attention_mask is not None:
-            attention_mask = (1 - attention_mask.to(sample.dtype)) * -10000.0
-            attention_mask = attention_mask.unsqueeze(1)
+        if attention_mask is not None and len(ops.size()(attention_mask)) == 2:
+            # assume that mask is expressed as:
+            #   (1 = keep,      0 = discard)
+            # convert mask into a bias that can be added to attention scores:
+            #       (keep = +0,     discard = -10000.0)
+            attention_mask = (
+                1 - ops.cast()(attention_mask, dtype=sample.dtype())
+            ) * -10000.0
+            attention_mask = ops.unsqueeze(1)(attention_mask)
 
         # 1. time
         timesteps = timestep
-        if len(timesteps.shape) == 0:
-            timesteps = timesteps[None].to(sample.device)
 
         # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
-        num_frames = sample.shape[2]
-        timesteps = timesteps.expand(sample.shape[0])
+        num_frames = ops.size()(sample, dim=1)
+        timesteps = ops.expand()(timesteps, [ops.size()(sample, dim=0)])
 
         t_emb = self.time_proj(timesteps)
 
         # timesteps does not contain any weights and will always return f32 tensors
         # but time_embedding might actually be running in fp16. so we need to cast here.
         # there might be better ways to encapsulate this.
-        t_emb = t_emb.to(dtype=self.dtype)
+        t_emb = ops.cast()(t_emb, dtype=self.dtype)
 
         emb = self.time_embedding(t_emb, timestep_cond)
         aug_emb = None
 
-        if self.config.addition_embed_type == "text_time":
+        if self.addition_embed_type == "text_time":
             if "text_embeds" not in added_cond_kwargs:
                 raise ValueError(
                     f"{self.__class__} has the config param `addition_embed_type` set to 'text_time' which requires the keyword argument `text_embeds` to be passed in `added_cond_kwargs`"
@@ -653,11 +592,13 @@ class UNetMotionModel(nn.Module):
                     f"{self.__class__} has the config param `addition_embed_type` set to 'text_time' which requires the keyword argument `time_ids` to be passed in `added_cond_kwargs`"
                 )
             time_ids = added_cond_kwargs.get("time_ids")
-            time_embeds = self.add_time_proj(time_ids.flatten())
-            time_embeds = time_embeds.reshape((text_embeds.shape[0], -1))
+            time_embeds = self.add_time_proj(ops.flatten()(time_ids))
+            time_embeds = ops.reshape()(
+                time_embeds, [ops.size()(text_embeds, dim=0), -1]
+            )
 
-            add_embeds = torch.concat([text_embeds, time_embeds], dim=-1)
-            add_embeds = add_embeds.to(emb.dtype)
+            add_embeds = ops.concatenate()([text_embeds, time_embeds], dim=-1)
+            add_embeds = ops.cast()(add_embeds, emb.dtype())
             aug_emb = self.add_embedding(add_embeds)
 
         emb = emb if aug_emb is None else emb + aug_emb
@@ -668,7 +609,7 @@ class UNetMotionModel(nn.Module):
 
         if (
             self.encoder_hid_proj is not None
-            and self.config.encoder_hid_dim_type == "ip_image_proj"
+            and self.encoder_hid_dim_type == "ip_image_proj"
         ):
             if "image_embeds" not in added_cond_kwargs:
                 raise ValueError(
@@ -683,9 +624,7 @@ class UNetMotionModel(nn.Module):
             encoder_hidden_states = (encoder_hidden_states, image_embeds)
 
         # 2. pre-process
-        sample = sample.permute(0, 2, 1, 3, 4).reshape(
-            (sample.shape[0] * num_frames, -1) + sample.shape[3:]
-        )
+        sample = ops.reshape()(sample, [batch * num_frames, height, width, channel])
         sample = self.conv_in(sample)
 
         # 3. down
@@ -759,7 +698,7 @@ class UNetMotionModel(nn.Module):
             # if we have not reached the final block and need to forward the
             # upsample size, we do it here
             if not is_final_block and forward_upsample_size:
-                upsample_size = down_block_res_samples[-1].shape[2:]
+                upsample_size = ops.size()(down_block_res_samples[-1])[1:2]
 
             if (
                 hasattr(upsample_block, "has_cross_attention")
@@ -791,11 +730,9 @@ class UNetMotionModel(nn.Module):
 
         sample = self.conv_out(sample)
 
-        # reshape to (batch, channel, framerate, width, height)
-        sample = (
-            sample[None, :]
-            .reshape((-1, num_frames) + sample.shape[1:])
-            .permute(0, 2, 1, 3, 4)
+        # reshape to (batch, framerate, width, height, channel)
+        sample = ops.reshape()(
+            ops.unsqueeze(0)(sample), [-1, num_frames] + ops.size()(sample)[1:]
         )
 
         if not return_dict:
