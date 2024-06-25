@@ -17,7 +17,7 @@ class TransformerTemporalModelOutput(BaseOutput):
     The output of [`TransformerTemporalModel`].
 
     Args:
-        sample (`Tensor` of shape `(batch_size x num_frames, num_channels, height, width)`):
+        sample (`Tensor` of shape `(batch_size x num_frames, height, width, num_channels)`):
             The hidden states output conditioned on `encoder_hidden_states` input.
     """
 
@@ -78,7 +78,7 @@ class TransformerTemporalModel(nn.Module):
 
         self.in_channels = in_channels
 
-        self.norm = torch.nn.GroupNorm(
+        self.norm = nn.GroupNorm(
             num_groups=norm_num_groups, num_channels=in_channels, eps=1e-6, affine=True
         )
         self.proj_in = nn.Linear(in_channels, inner_dim)
@@ -214,6 +214,7 @@ class TransformerSpatioTemporalModel(nn.Module):
         out_channels: Optional[int] = None,
         num_layers: int = 1,
         cross_attention_dim: Optional[int] = None,
+        dtype: str = "float16",
     ):
         super().__init__()
         self.num_attention_heads = num_attention_heads
@@ -224,10 +225,10 @@ class TransformerSpatioTemporalModel(nn.Module):
 
         # 2. Define input layers
         self.in_channels = in_channels
-        self.norm = torch.nn.GroupNorm(
-            num_groups=32, num_channels=in_channels, eps=1e-6
+        self.norm = nn.GroupNorm(
+            num_groups=32, num_channels=in_channels, eps=1e-6, dtype=dtype
         )
-        self.proj_in = nn.Linear(in_channels, inner_dim)
+        self.proj_in = nn.Linear(in_channels, inner_dim, dtype=dtype)
 
         # 3. Define transformers blocks
         self.transformer_blocks = nn.ModuleList(
@@ -237,6 +238,7 @@ class TransformerSpatioTemporalModel(nn.Module):
                     num_attention_heads,
                     attention_head_dim,
                     cross_attention_dim=cross_attention_dim,
+                    dtype=dtype,
                 )
                 for d in range(num_layers)
             ]
@@ -251,6 +253,7 @@ class TransformerSpatioTemporalModel(nn.Module):
                     num_attention_heads,
                     attention_head_dim,
                     cross_attention_dim=cross_attention_dim,
+                    dtype=dtype,
                 )
                 for _ in range(num_layers)
             ]
@@ -258,15 +261,17 @@ class TransformerSpatioTemporalModel(nn.Module):
 
         time_embed_dim = in_channels * 4
         self.time_pos_embed = TimestepEmbedding(
-            in_channels, time_embed_dim, out_dim=in_channels
+            in_channels, time_embed_dim, out_dim=in_channels, dtype=dtype
         )
-        self.time_proj = Timesteps(in_channels, True, 0)
-        self.time_mixer = AlphaBlender(alpha=0.5, merge_strategy="learned_with_images")
+        self.time_proj = Timesteps(in_channels, True, 0, dtype=dtype)
+        self.time_mixer = AlphaBlender(
+            alpha=0.5, merge_strategy="learned_with_images", dtype=dtype
+        )
 
         # 4. Define output layers
         self.out_channels = in_channels if out_channels is None else out_channels
         # TODO: should use out_channels for continuous projections
-        self.proj_out = nn.Linear(inner_dim, in_channels)
+        self.proj_out = nn.Linear(inner_dim, in_channels, dtype=dtype)
 
         self.gradient_checkpointing = False
 
@@ -279,7 +284,7 @@ class TransformerSpatioTemporalModel(nn.Module):
     ):
         """
         Args:
-            hidden_states (`Tensor` of shape `(batch size, channel, height, width)`):
+            hidden_states (`Tensor` of shape `(batch size, height, width, channel)`):
                 Input hidden_states.
             num_frames (`int`):
                 The number of frames to be processed per batch. This is used to reshape the hidden states.
@@ -300,42 +305,54 @@ class TransformerSpatioTemporalModel(nn.Module):
                 `tuple` where the first element is the sample tensor.
         """
         # 1. Input
-        batch_frames, _, height, width = hidden_states.shape
-        num_frames = image_only_indicator.shape[-1]
-        batch_size = batch_frames // num_frames
+        batch_frames, height, width, _ = ops.size()(hidden_states)
+        num_frames = ops.size()(image_only_indicator, dim=-1)
+        batch_size = batch_frames / num_frames
 
         time_context = encoder_hidden_states
-        time_context_first_timestep = time_context[None, :].reshape(
-            batch_size, num_frames, -1, time_context.shape[-1]
-        )[:, 0]
-        time_context = time_context_first_timestep[:, None].broadcast_to(
-            batch_size, height * width, time_context.shape[-2], time_context.shape[-1]
+        time_context_first_timestep = ops.dynamic_slice()(
+            ops.reshape()(
+                ops.unsqueeze(0)(time_context),
+                [batch_size, num_frames, -1, ops.size()(time_context, dim=-1)],
+            ),
+            start_indices=[0, 0],
+            end_indices=[None, 1],
         )
-        time_context = time_context.reshape(
-            batch_size * height * width, -1, time_context.shape[-1]
+        time_context = ops.reshape()(
+            ops.unsqueeze(0)(time_context_first_timestep),
+            [
+                batch_size,
+                height * width,
+                ops.size()(time_context, dim=-2),
+                ops.size()(time_context, dim=-1),
+            ],
+        )
+        time_context = ops.reshape()(
+            time_context,
+            [batch_size * height * width, -1, ops.size()(time_context, dim=-1)],
         )
 
         residual = hidden_states
 
         hidden_states = self.norm(hidden_states)
-        inner_dim = hidden_states.shape[1]
-        hidden_states = hidden_states.permute(0, 2, 3, 1).reshape(
-            batch_frames, height * width, inner_dim
+        inner_dim = ops.size()(hidden_states, dim=-1)
+        hidden_states = ops.reshape()(
+            hidden_states, [batch_frames, height * width, inner_dim]
         )
         hidden_states = self.proj_in(hidden_states)
 
-        num_frames_emb = torch.arange(num_frames, device=hidden_states.device)
-        num_frames_emb = num_frames_emb.repeat(batch_size, 1)
-        num_frames_emb = num_frames_emb.reshape(-1)
+        num_frames_emb = Tensor(
+            [num_frames * batch_size], name="num_frames_emb"
+        )  # arange(num_frames), repeat(batch_size, 1), reshape(-1)
         t_emb = self.time_proj(num_frames_emb)
 
         # `Timesteps` does not contain any weights and will always return f32 tensors
         # but time_embedding might actually be running in fp16. so we need to cast here.
         # there might be better ways to encapsulate this.
-        t_emb = t_emb.to(dtype=hidden_states.dtype)
+        t_emb = ops.cast()(t_emb, dtype=hidden_states.dtype())
 
         emb = self.time_pos_embed(t_emb)
-        emb = emb[:, None, :]
+        emb = ops.unsqueeze(1)(emb)
 
         # 2. Blocks
         for block, temporal_block in zip(
@@ -362,10 +379,8 @@ class TransformerSpatioTemporalModel(nn.Module):
 
         # 3. Output
         hidden_states = self.proj_out(hidden_states)
-        hidden_states = (
-            hidden_states.reshape(batch_frames, height, width, inner_dim)
-            .permute(0, 3, 1, 2)
-            .contiguous()
+        hidden_states = ops.reshape()(
+            hidden_states, [batch_frames, height, width, inner_dim]
         )
 
         output = hidden_states + residual
