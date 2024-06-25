@@ -7,14 +7,7 @@ from aitemplate.frontend import nn, Tensor
 
 from ...utils import BaseOutput
 from ..activations import get_activation
-from ..attention_processor import (
-    ADDED_KV_ATTENTION_PROCESSORS,
-    Attention,
-    AttentionProcessor,
-    AttnAddedKVProcessor,
-    AttnProcessor,
-    CROSS_ATTENTION_PROCESSORS,
-)
+from ..attention_processor import AttentionProcessor
 from ..embeddings import (
     GaussianFourierProjection,
     GLIGENTextBoundingboxProjection,
@@ -37,7 +30,7 @@ class UNet2DConditionOutput(BaseOutput):
     The output of [`UNet2DConditionModel`].
 
     Args:
-        sample (`Tensor` of shape `(batch_size, num_channels, height, width)`):
+        sample (`Tensor` of shape `(batch_size, height, width, num_channels)`):
             The hidden states output conditioned on `encoder_hidden_states` input. Output of last layer of model.
     """
 
@@ -201,10 +194,16 @@ class UNet2DConditionModel(nn.Module):
         mid_block_only_cross_attention: Optional[bool] = None,
         cross_attention_norm: Optional[str] = None,
         addition_embed_type_num_heads: int = 64,
+        dtype: str = "float16",
     ):
         super().__init__()
 
         self.sample_size = sample_size
+        self.class_embed_type = class_embed_type
+        self.addition_embed_type = addition_embed_type
+        self.center_input_sample = center_input_sample
+        self.class_embeddings_concat = class_embeddings_concat
+        self.encoder_hid_dim_type = encoder_hid_dim_type
 
         if num_attention_heads is not None:
             raise ValueError(
@@ -235,11 +234,12 @@ class UNet2DConditionModel(nn.Module):
 
         # input
         conv_in_padding = (conv_in_kernel - 1) // 2
-        self.conv_in = nn.Conv2d(
+        self.conv_in = nn.Conv2dBias(
             in_channels,
             block_out_channels[0],
             kernel_size=conv_in_kernel,
             padding=conv_in_padding,
+            dtype=dtype,
         )
 
         # time
@@ -249,6 +249,7 @@ class UNet2DConditionModel(nn.Module):
             flip_sin_to_cos=flip_sin_to_cos,
             freq_shift=freq_shift,
             time_embedding_dim=time_embedding_dim,
+            dtype=dtype,
         )
 
         self.time_embedding = TimestepEmbedding(
@@ -257,12 +258,14 @@ class UNet2DConditionModel(nn.Module):
             act_fn=act_fn,
             post_act_fn=timestep_post_act,
             cond_proj_dim=time_cond_proj_dim,
+            dtype=dtype,
         )
 
         self._set_encoder_hid_proj(
             encoder_hid_dim_type,
             cross_attention_dim=cross_attention_dim,
             encoder_hid_dim=encoder_hid_dim,
+            dtype=dtype,
         )
 
         # class embedding
@@ -558,6 +561,7 @@ class UNet2DConditionModel(nn.Module):
         flip_sin_to_cos: bool,
         freq_shift: float,
         time_embedding_dim: int,
+        dtype: str = "float16",
     ) -> Tuple[int, int]:
         if time_embedding_type == "fourier":
             time_embed_dim = time_embedding_dim or block_out_channels[0] * 2
@@ -570,13 +574,14 @@ class UNet2DConditionModel(nn.Module):
                 set_W_to_weight=False,
                 log=False,
                 flip_sin_to_cos=flip_sin_to_cos,
+                dtype=dtype,
             )
             timestep_input_dim = time_embed_dim
         elif time_embedding_type == "positional":
             time_embed_dim = time_embedding_dim or block_out_channels[0] * 4
 
             self.time_proj = Timesteps(
-                block_out_channels[0], flip_sin_to_cos, freq_shift
+                block_out_channels[0], flip_sin_to_cos, freq_shift, dtype=dtype
             )
             timestep_input_dim = block_out_channels[0]
         else:
@@ -591,6 +596,7 @@ class UNet2DConditionModel(nn.Module):
         encoder_hid_dim_type: Optional[str],
         cross_attention_dim: Union[int, Tuple[int]],
         encoder_hid_dim: Optional[int],
+        dtype: str = "float16",
     ):
         if encoder_hid_dim_type is None and encoder_hid_dim is not None:
             encoder_hid_dim_type = "text_proj"
@@ -601,7 +607,9 @@ class UNet2DConditionModel(nn.Module):
             )
 
         if encoder_hid_dim_type == "text_proj":
-            self.encoder_hid_proj = nn.Linear(encoder_hid_dim, cross_attention_dim)
+            self.encoder_hid_proj = nn.Linear(
+                encoder_hid_dim, cross_attention_dim, dtype=dtype
+            )
         elif encoder_hid_dim_type == "text_image_proj":
             # image_embed_dim DOESN'T have to be `cross_attention_dim`. To not clutter the __init__ too much
             # they are set to `cross_attention_dim` here as this is exactly the required dimension for the currently only use
@@ -610,12 +618,14 @@ class UNet2DConditionModel(nn.Module):
                 text_embed_dim=encoder_hid_dim,
                 image_embed_dim=cross_attention_dim,
                 cross_attention_dim=cross_attention_dim,
+                dtype=dtype,
             )
         elif encoder_hid_dim_type == "image_proj":
             # Kandinsky 2.2
             self.encoder_hid_proj = ImageProjection(
                 image_embed_dim=encoder_hid_dim,
                 cross_attention_dim=cross_attention_dim,
+                dtype=dtype,
             )
         elif encoder_hid_dim_type is not None:
             raise ValueError(
@@ -632,15 +642,18 @@ class UNet2DConditionModel(nn.Module):
         projection_class_embeddings_input_dim: Optional[int],
         time_embed_dim: int,
         timestep_input_dim: int,
+        dtype: str = "float16",
     ):
         if class_embed_type is None and num_class_embeds is not None:
-            self.class_embedding = nn.Embedding(num_class_embeds, time_embed_dim)
+            self.class_embedding = nn.Embedding(
+                [num_class_embeds, time_embed_dim], dtype=dtype
+            )
         elif class_embed_type == "timestep":
             self.class_embedding = TimestepEmbedding(
-                timestep_input_dim, time_embed_dim, act_fn=act_fn
+                timestep_input_dim, time_embed_dim, act_fn=act_fn, dtype=dtype
             )
         elif class_embed_type == "identity":
-            self.class_embedding = nn.Identity(time_embed_dim, time_embed_dim)
+            self.class_embedding = nn.Identity()
         elif class_embed_type == "projection":
             if projection_class_embeddings_input_dim is None:
                 raise ValueError(
@@ -654,7 +667,7 @@ class UNet2DConditionModel(nn.Module):
             # When used for embedding actual timesteps, the timesteps are first converted to sinusoidal embeddings.
             # As a result, `TimestepEmbedding` can be passed arbitrary vectors.
             self.class_embedding = TimestepEmbedding(
-                projection_class_embeddings_input_dim, time_embed_dim
+                projection_class_embeddings_input_dim, time_embed_dim, dtype=dtype
             )
         elif class_embed_type == "simple_projection":
             if projection_class_embeddings_input_dim is None:
@@ -662,7 +675,7 @@ class UNet2DConditionModel(nn.Module):
                     "`class_embed_type`: 'simple_projection' requires `projection_class_embeddings_input_dim` be set"
                 )
             self.class_embedding = nn.Linear(
-                projection_class_embeddings_input_dim, time_embed_dim
+                projection_class_embeddings_input_dim, time_embed_dim, dtype=dtype
             )
         else:
             self.class_embedding = None
@@ -678,6 +691,7 @@ class UNet2DConditionModel(nn.Module):
         encoder_hid_dim: Optional[int],
         projection_class_embeddings_input_dim: Optional[int],
         time_embed_dim: int,
+        dtype: str = "float16",
     ):
         if addition_embed_type == "text":
             if encoder_hid_dim is not None:
@@ -689,6 +703,7 @@ class UNet2DConditionModel(nn.Module):
                 text_time_embedding_from_dim,
                 time_embed_dim,
                 num_heads=addition_embed_type_num_heads,
+                dtype=dtype,
             )
         elif addition_embed_type == "text_image":
             # text_embed_dim and image_embed_dim DON'T have to be `cross_attention_dim`. To not clutter the __init__ too much
@@ -698,30 +713,37 @@ class UNet2DConditionModel(nn.Module):
                 text_embed_dim=cross_attention_dim,
                 image_embed_dim=cross_attention_dim,
                 time_embed_dim=time_embed_dim,
+                dtype=dtype,
             )
         elif addition_embed_type == "text_time":
             self.add_time_proj = Timesteps(
-                addition_time_embed_dim, flip_sin_to_cos, freq_shift
+                addition_time_embed_dim, flip_sin_to_cos, freq_shift, dtype=dtype
             )
             self.add_embedding = TimestepEmbedding(
-                projection_class_embeddings_input_dim, time_embed_dim
+                projection_class_embeddings_input_dim, time_embed_dim, dtype=dtype
             )
         elif addition_embed_type == "image":
             # Kandinsky 2.2
             self.add_embedding = ImageTimeEmbedding(
-                image_embed_dim=encoder_hid_dim, time_embed_dim=time_embed_dim
+                image_embed_dim=encoder_hid_dim,
+                time_embed_dim=time_embed_dim,
+                dtype=dtype,
             )
         elif addition_embed_type == "image_hint":
             # Kandinsky 2.2 ControlNet
             self.add_embedding = ImageHintTimeEmbedding(
-                image_embed_dim=encoder_hid_dim, time_embed_dim=time_embed_dim
+                image_embed_dim=encoder_hid_dim,
+                time_embed_dim=time_embed_dim,
+                dtype=dtype,
             )
         elif addition_embed_type is not None:
             raise ValueError(
                 f"addition_embed_type: {addition_embed_type} must be None, 'text' or 'text_image'."
             )
 
-    def _set_pos_net_if_use_gligen(self, attention_type: str, cross_attention_dim: int):
+    def _set_pos_net_if_use_gligen(
+        self, attention_type: str, cross_attention_dim: int, dtype: str = "float16"
+    ):
         if attention_type in ["gated", "gated-text-image"]:
             positive_len = 768
             if isinstance(cross_attention_dim, int):
@@ -734,6 +756,7 @@ class UNet2DConditionModel(nn.Module):
                 positive_len=positive_len,
                 out_dim=cross_attention_dim,
                 feature_type=feature_type,
+                dtype=dtype,
             )
 
     def set_attn_processor(
@@ -772,124 +795,19 @@ class UNet2DConditionModel(nn.Module):
         for name, module in self.named_children():
             fn_recursive_attn_processor(name, module, processor)
 
-    def set_attention_slice(self, slice_size: Union[str, int, List[int]] = "auto"):
-        r"""
-        Enable sliced attention computation.
-
-        When this option is enabled, the attention module splits the input tensor in slices to compute attention in
-        several steps. This is useful for saving some memory in exchange for a small decrease in speed.
-
-        Args:
-            slice_size (`str` or `int` or `list(int)`, *optional*, defaults to `"auto"`):
-                When `"auto"`, input to the attention heads is halved, so attention is computed in two steps. If
-                `"max"`, maximum amount of memory is saved by running only one slice at a time. If a number is
-                provided, uses as many slices as `attention_head_dim // slice_size`. In this case, `attention_head_dim`
-                must be a multiple of `slice_size`.
-        """
-        sliceable_head_dims = []
-
-        def fn_recursive_retrieve_sliceable_dims(module: nn.Module):
-            if hasattr(module, "set_attention_slice"):
-                sliceable_head_dims.append(module.sliceable_head_dim)
-
-            for child in module.children():
-                fn_recursive_retrieve_sliceable_dims(child)
-
-        # retrieve number of attention layers
-        for module in self.children():
-            fn_recursive_retrieve_sliceable_dims(module)
-
-        num_sliceable_layers = len(sliceable_head_dims)
-
-        if slice_size == "auto":
-            # half the attention head size is usually a good trade-off between
-            # speed and memory
-            slice_size = [dim // 2 for dim in sliceable_head_dims]
-        elif slice_size == "max":
-            # make smallest slice possible
-            slice_size = num_sliceable_layers * [1]
-
-        slice_size = (
-            num_sliceable_layers * [slice_size]
-            if not isinstance(slice_size, list)
-            else slice_size
-        )
-
-        if len(slice_size) != len(sliceable_head_dims):
-            raise ValueError(
-                f"You have provided {len(slice_size)}, but {self.config} has {len(sliceable_head_dims)} different"
-                f" attention layers. Make sure to match `len(slice_size)` to be {len(sliceable_head_dims)}."
-            )
-
-        for i in range(len(slice_size)):
-            size = slice_size[i]
-            dim = sliceable_head_dims[i]
-            if size is not None and size > dim:
-                raise ValueError(f"size {size} has to be smaller or equal to {dim}.")
-
-        # Recursively walk through all the children.
-        # Any children which exposes the set_attention_slice method
-        # gets the message
-        def fn_recursive_set_attention_slice(module: nn.Module, slice_size: List[int]):
-            if hasattr(module, "set_attention_slice"):
-                module.set_attention_slice(slice_size.pop())
-
-            for child in module.children():
-                fn_recursive_set_attention_slice(child, slice_size)
-
-        reversed_slice_size = list(reversed(slice_size))
-        for module in self.children():
-            fn_recursive_set_attention_slice(module, reversed_slice_size)
-
-    def enable_freeu(self, s1: float, s2: float, b1: float, b2: float):
-        r"""Enables the FreeU mechanism from https://arxiv.org/abs/2309.11497.
-
-        The suffixes after the scaling factors represent the stage blocks where they are being applied.
-
-        Please refer to the [official repository](https://github.com/ChenyangSi/FreeU) for combinations of values that
-        are known to work well for different pipelines such as Stable Diffusion v1, v2, and Stable Diffusion XL.
-
-        Args:
-            s1 (`float`):
-                Scaling factor for stage 1 to attenuate the contributions of the skip features. This is done to
-                mitigate the "oversmoothing effect" in the enhanced denoising process.
-            s2 (`float`):
-                Scaling factor for stage 2 to attenuate the contributions of the skip features. This is done to
-                mitigate the "oversmoothing effect" in the enhanced denoising process.
-            b1 (`float`): Scaling factor for stage 1 to amplify the contributions of backbone features.
-            b2 (`float`): Scaling factor for stage 2 to amplify the contributions of backbone features.
-        """
-        for i, upsample_block in enumerate(self.up_blocks):
-            setattr(upsample_block, "s1", s1)
-            setattr(upsample_block, "s2", s2)
-            setattr(upsample_block, "b1", b1)
-            setattr(upsample_block, "b2", b2)
-
-    def disable_freeu(self):
-        """Disables the FreeU mechanism."""
-        freeu_keys = {"s1", "s2", "b1", "b2"}
-        for i, upsample_block in enumerate(self.up_blocks):
-            for k in freeu_keys:
-                if (
-                    hasattr(upsample_block, k)
-                    or getattr(upsample_block, k, None) is not None
-                ):
-                    setattr(upsample_block, k, None)
-
     def get_time_embed(
         self, sample: Tensor, timestep: Union[Tensor, float, int]
     ) -> Optional[Tensor]:
         timesteps = timestep
-        timesteps = timesteps[None].to(sample.device)
 
         # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
-        timesteps = timesteps.expand(sample.shape[0])
+        timesteps = ops.expand()(timesteps, shape=[ops.size()(sample, dim=0)])
 
         t_emb = self.time_proj(timesteps)
         # `Timesteps` does not contain any weights and will always return f32 tensors
         # but time_embedding might actually be running in fp16. so we need to cast here.
         # there might be better ways to encapsulate this.
-        t_emb = t_emb.to(dtype=sample.dtype)
+        t_emb = ops.cast()(t_emb, dtype=sample.dtype())
         return t_emb
 
     def get_class_embed(
@@ -902,14 +820,16 @@ class UNet2DConditionModel(nn.Module):
                     "class_labels should be provided when num_class_embeds > 0"
                 )
 
-            if self.config.class_embed_type == "timestep":
+            if self.class_embed_type == "timestep":
                 class_labels = self.time_proj(class_labels)
 
                 # `Timesteps` does not contain any weights and will always return f32 tensors
                 # there might be better ways to encapsulate this.
-                class_labels = class_labels.to(dtype=sample.dtype)
+                class_labels = ops.cast()(class_labels, dtype=sample.dtype())
 
-            class_emb = self.class_embedding(class_labels).to(dtype=sample.dtype)
+            class_emb = ops.cast()(
+                self.class_embedding(class_labels), dtype=sample.dtype()
+            )
         return class_emb
 
     def get_aug_embed(
@@ -919,9 +839,9 @@ class UNet2DConditionModel(nn.Module):
         added_cond_kwargs: Dict[str, Any],
     ) -> Optional[Tensor]:
         aug_emb = None
-        if self.config.addition_embed_type == "text":
+        if self.addition_embed_type == "text":
             aug_emb = self.add_embedding(encoder_hidden_states)
-        elif self.config.addition_embed_type == "text_image":
+        elif self.addition_embed_type == "text_image":
             # Kandinsky 2.1 - style
             if "image_embeds" not in added_cond_kwargs:
                 raise ValueError(
@@ -931,7 +851,7 @@ class UNet2DConditionModel(nn.Module):
             image_embs = added_cond_kwargs.get("image_embeds")
             text_embs = added_cond_kwargs.get("text_embeds", encoder_hidden_states)
             aug_emb = self.add_embedding(text_embs, image_embs)
-        elif self.config.addition_embed_type == "text_time":
+        elif self.addition_embed_type == "text_time":
             # SDXL - style
             if "text_embeds" not in added_cond_kwargs:
                 raise ValueError(
@@ -943,12 +863,14 @@ class UNet2DConditionModel(nn.Module):
                     f"{self.__class__} has the config param `addition_embed_type` set to 'text_time' which requires the keyword argument `time_ids` to be passed in `added_cond_kwargs`"
                 )
             time_ids = added_cond_kwargs.get("time_ids")
-            time_embeds = self.add_time_proj(time_ids.flatten())
-            time_embeds = time_embeds.reshape((text_embeds.shape[0], -1))
-            add_embeds = torch.concat([text_embeds, time_embeds], dim=-1)
-            add_embeds = add_embeds.to(emb.dtype)
+            time_embeds = self.add_time_proj(ops.flatten()(time_ids))
+            time_embeds = ops.reshape()(
+                time_embeds, [ops.size()(text_embeds, dim=0), -1]
+            )
+            add_embeds = ops.concatenate()([text_embeds, time_embeds], dim=-1)
+            add_embeds = ops.cast()(add_embeds, dtype=emb.dtype())
             aug_emb = self.add_embedding(add_embeds)
-        elif self.config.addition_embed_type == "image":
+        elif self.addition_embed_type == "image":
             # Kandinsky 2.2 - style
             if "image_embeds" not in added_cond_kwargs:
                 raise ValueError(
@@ -956,7 +878,7 @@ class UNet2DConditionModel(nn.Module):
                 )
             image_embs = added_cond_kwargs.get("image_embeds")
             aug_emb = self.add_embedding(image_embs)
-        elif self.config.addition_embed_type == "image_hint":
+        elif self.addition_embed_type == "image_hint":
             # Kandinsky 2.2 - style
             if (
                 "image_embeds" not in added_cond_kwargs
@@ -975,12 +897,12 @@ class UNet2DConditionModel(nn.Module):
     ) -> Tensor:
         if (
             self.encoder_hid_proj is not None
-            and self.config.encoder_hid_dim_type == "text_proj"
+            and self.encoder_hid_dim_type == "text_proj"
         ):
             encoder_hidden_states = self.encoder_hid_proj(encoder_hidden_states)
         elif (
             self.encoder_hid_proj is not None
-            and self.config.encoder_hid_dim_type == "text_image_proj"
+            and self.encoder_hid_dim_type == "text_image_proj"
         ):
             # Kandinsky 2.1 - style
             if "image_embeds" not in added_cond_kwargs:
@@ -994,7 +916,7 @@ class UNet2DConditionModel(nn.Module):
             )
         elif (
             self.encoder_hid_proj is not None
-            and self.config.encoder_hid_dim_type == "image_proj"
+            and self.encoder_hid_dim_type == "image_proj"
         ):
             # Kandinsky 2.2 - style
             if "image_embeds" not in added_cond_kwargs:
@@ -1005,7 +927,7 @@ class UNet2DConditionModel(nn.Module):
             encoder_hidden_states = self.encoder_hid_proj(image_embeds)
         elif (
             self.encoder_hid_proj is not None
-            and self.config.encoder_hid_dim_type == "ip_image_proj"
+            and self.encoder_hid_dim_type == "ip_image_proj"
         ):
             if "image_embeds" not in added_cond_kwargs:
                 raise ValueError(
@@ -1037,7 +959,7 @@ class UNet2DConditionModel(nn.Module):
 
         Args:
             sample (`Tensor`):
-                The noisy input tensor with the following shape `(batch, channel, height, width)`.
+                The noisy input tensor with the following shape `(batch, height, width, channel)`.
             timestep (`Tensor` or `float` or `int`): The number of timesteps to denoise an input.
             encoder_hidden_states (`Tensor`):
                 The encoder hidden states with shape `(batch, sequence_length, feature_dim)`.
@@ -1086,7 +1008,7 @@ class UNet2DConditionModel(nn.Module):
         forward_upsample_size = False
         upsample_size = None
 
-        for dim in sample.shape[-2:]:
+        for dim in ops.size()(sample)[1:2]:
             if dim % default_overall_up_factor != 0:
                 # Forward upsample size to force interpolation output size.
                 forward_upsample_size = True
@@ -1100,23 +1022,28 @@ class UNet2DConditionModel(nn.Module):
         # this helps to broadcast it as a bias over attention scores, which will be in one of the following shapes:
         #   [batch,  heads, query_tokens, key_tokens] (e.g. torch sdp attn)
         #   [batch * heads, query_tokens, key_tokens] (e.g. xformers or classic attn)
-        if attention_mask is not None:
+        if attention_mask is not None and len(ops.size()(attention_mask)) == 2:
             # assume that mask is expressed as:
             #   (1 = keep,      0 = discard)
             # convert mask into a bias that can be added to attention scores:
             #       (keep = +0,     discard = -10000.0)
-            attention_mask = (1 - attention_mask.to(sample.dtype)) * -10000.0
-            attention_mask = attention_mask.unsqueeze(1)
+            attention_mask = (
+                1 - ops.cast()(attention_mask, dtype=sample.dtype())
+            ) * -10000.0
+            attention_mask = ops.unsqueeze(1)(attention_mask)
 
         # convert encoder_attention_mask to a bias the same way we do for attention_mask
-        if encoder_attention_mask is not None:
+        if (
+            encoder_attention_mask is not None
+            and len(ops.size()(encoder_attention_mask)) == 2
+        ):
             encoder_attention_mask = (
-                1 - encoder_attention_mask.to(sample.dtype)
+                1 - ops.cast()(encoder_attention_mask, dtype=sample.dtype())
             ) * -10000.0
-            encoder_attention_mask = encoder_attention_mask.unsqueeze(1)
+            encoder_attention_mask = ops.unsqueeze(1)(encoder_attention_mask)
 
         # 0. center input if necessary
-        if self.config.center_input_sample:
+        if self.center_input_sample:
             sample = 2 * sample - 1.0
 
         # 1. time
@@ -1126,8 +1053,8 @@ class UNet2DConditionModel(nn.Module):
 
         class_emb = self.get_class_embed(sample=sample, class_labels=class_labels)
         if class_emb is not None:
-            if self.config.class_embeddings_concat:
-                emb = torch.cat([emb, class_emb], dim=-1)
+            if self.class_embeddings_concat:
+                emb = ops.concatenate()([emb, class_emb], dim=-1)
             else:
                 emb = emb + class_emb
 
@@ -1136,9 +1063,9 @@ class UNet2DConditionModel(nn.Module):
             encoder_hidden_states=encoder_hidden_states,
             added_cond_kwargs=added_cond_kwargs,
         )
-        if self.config.addition_embed_type == "image_hint":
+        if self.addition_embed_type == "image_hint":
             aug_emb, hint = aug_emb
-            sample = torch.cat([sample, hint], dim=1)
+            sample = ops.concatenate()([sample, hint], dim=1)
 
         emb = emb + aug_emb if aug_emb is not None else emb
 
@@ -1167,11 +1094,6 @@ class UNet2DConditionModel(nn.Module):
         # 3. down
         # we're popping the `scale` instead of getting it because otherwise `scale` will be propagated
         # to the internal blocks and will raise deprecation warnings. this will be confusing for our users.
-        if cross_attention_kwargs is not None:
-            cross_attention_kwargs = cross_attention_kwargs.copy()
-            lora_scale = cross_attention_kwargs.pop("scale", 1.0)
-        else:
-            lora_scale = 1.0
 
         is_controlnet = (
             mid_block_additional_residual is not None
@@ -1255,7 +1177,8 @@ class UNet2DConditionModel(nn.Module):
             if (
                 is_adapter
                 and len(down_intrablock_additional_residuals) > 0
-                and sample.shape == down_intrablock_additional_residuals[0].shape
+                and ops.size()(sample)
+                == ops.size()(down_intrablock_additional_residuals[0])
             ):
                 sample += down_intrablock_additional_residuals.pop(0)
 
@@ -1274,7 +1197,7 @@ class UNet2DConditionModel(nn.Module):
             # if we have not reached the final block and need to forward the
             # upsample size, we do it here
             if not is_final_block and forward_upsample_size:
-                upsample_size = down_block_res_samples[-1].shape[2:]
+                upsample_size = ops.size()(down_block_res_samples[-1])[1:2]
 
             if (
                 hasattr(upsample_block, "has_cross_attention")
