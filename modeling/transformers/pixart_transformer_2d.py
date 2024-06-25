@@ -235,7 +235,7 @@ class PixArtTransformer2DModel(nn.Module):
         # this helps to broadcast it as a bias over attention scores, which will be in one of the following shapes:
         #   [batch,  heads, query_tokens, key_tokens] (e.g. torch sdp attn)
         #   [batch * heads, query_tokens, key_tokens] (e.g. xformers or classic attn)
-        if attention_mask is not None and attention_mask.ndim == 2:
+        if attention_mask is not None and len(ops.size()(attention_mask)) == 2:
             # assume that mask is expressed as:
             #   (1 = keep,      0 = discard)
             # convert mask into a bias that can be added to attention scores:
@@ -246,7 +246,10 @@ class PixArtTransformer2DModel(nn.Module):
             attention_mask = ops.unsqueeze(1)(attention_mask)
 
         # convert encoder_attention_mask to a bias the same way we do for attention_mask
-        if encoder_attention_mask is not None and encoder_attention_mask.ndim == 2:
+        if (
+            encoder_attention_mask is not None
+            and len(ops.size()(encoder_attention_mask)) == 2
+        ):
             encoder_attention_mask = (
                 1 - ops.cast()(encoder_attention_mask, dtype=hidden_states.dtype())
             ) * -10000.0

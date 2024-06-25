@@ -361,7 +361,7 @@ class BasicTransformerBlock(nn.Module):
             attn_output = gate_msa * attn_output
 
         hidden_states = attn_output + hidden_states
-        if hidden_states.ndim == 4:
+        if len(ops.size()(hidden_states)) == 4:
             hidden_states = ops.squeeze(1)(hidden_states)
 
         # 1.2 GLIGEN Control
@@ -422,7 +422,7 @@ class BasicTransformerBlock(nn.Module):
             ff_output = gate_mlp * ff_output
 
         hidden_states = ff_output + hidden_states
-        if hidden_states.ndim == 4:
+        if len(ops.size()(hidden_states)) == 4:
             hidden_states = ops.squeeze(1)(hidden_states)
 
         return hidden_states
