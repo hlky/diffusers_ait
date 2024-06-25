@@ -81,9 +81,11 @@ class UNet1DModel(nn.Module):
         norm_num_groups: int = 8,
         layers_per_block: int = 1,
         downsample_each_block: bool = False,
+        dtype: str = "float16",
     ):
         super().__init__()
         self.sample_size = sample_size
+        self.use_timestep_embedding = use_timestep_embedding
 
         # time
         if time_embedding_type == "fourier":
@@ -92,6 +94,7 @@ class UNet1DModel(nn.Module):
                 set_W_to_weight=False,
                 log=False,
                 flip_sin_to_cos=flip_sin_to_cos,
+                dtype=dtype,
             )
             timestep_input_dim = 2 * block_out_channels[0]
         elif time_embedding_type == "positional":
@@ -99,6 +102,7 @@ class UNet1DModel(nn.Module):
                 block_out_channels[0],
                 flip_sin_to_cos=flip_sin_to_cos,
                 downscale_freq_shift=freq_shift,
+                dtype=dtype,
             )
             timestep_input_dim = block_out_channels[0]
 
@@ -109,6 +113,7 @@ class UNet1DModel(nn.Module):
                 time_embed_dim=time_embed_dim,
                 act_fn=act_fn,
                 out_dim=block_out_channels[0],
+                dtype=dtype,
             )
 
         self.down_blocks = nn.ModuleList([])
@@ -134,6 +139,7 @@ class UNet1DModel(nn.Module):
                 out_channels=output_channel,
                 temb_channels=block_out_channels[0],
                 add_downsample=not is_final_block or downsample_each_block,
+                dtype=dtype,
             )
             self.down_blocks.append(down_block)
 
@@ -146,6 +152,7 @@ class UNet1DModel(nn.Module):
             embed_dim=block_out_channels[0],
             num_layers=layers_per_block,
             add_downsample=downsample_each_block,
+            dtype=dtype,
         )
 
         # up
@@ -173,6 +180,7 @@ class UNet1DModel(nn.Module):
                 out_channels=output_channel,
                 temb_channels=block_out_channels[0],
                 add_upsample=not is_final_block,
+                dtype=dtype,
             )
             self.up_blocks.append(up_block)
             prev_output_channel = output_channel
@@ -190,6 +198,7 @@ class UNet1DModel(nn.Module):
             out_channels=out_channels,
             act_fn=act_fn,
             fc_dim=block_out_channels[-1] // 4,
+            dtype=dtype,
         )
 
     def forward(
@@ -216,23 +225,18 @@ class UNet1DModel(nn.Module):
 
         # 1. time
         timesteps = timestep
-        if not torch.is_tensor(timesteps):
-            timesteps = torch.tensor(
-                [timesteps], dtype=torch.long, device=sample.device
-            )
-        elif torch.is_tensor(timesteps) and len(timesteps.shape) == 0:
-            timesteps = timesteps[None].to(sample.device)
 
         timestep_embed = self.time_proj(timesteps)
-        if self.config.use_timestep_embedding:
+        if self.use_timestep_embedding:
             timestep_embed = self.time_mlp(timestep_embed)
         else:
-            timestep_embed = timestep_embed[..., None]
-            timestep_embed = timestep_embed.repeat([1, 1, sample.shape[2]]).to(
-                sample.dtype
+            timestep_embed = ops.unsqueeze(-1)(timestep_embed)
+            timestep_embed = ops.cast()(
+                ops.expand()(timestep_embed, [1, 1, ops.size()(sample, dim=2)]),
+                dtype=sample.dtype(),
             )
-            timestep_embed = timestep_embed.broadcast_to(
-                (sample.shape[:1] + timestep_embed.shape[1:])
+            timestep_embed = ops.reshape()(
+                timestep_embed, ops.size()(sample)[:1] + ops.size()(timestep_embed)[1:]
             )
 
         # 2. down
