@@ -5,6 +5,8 @@ from aitemplate.compiler import ops
 
 from aitemplate.frontend import nn, Tensor
 
+from .activations import FP32SiLU
+
 # TODO: sync with diffusers
 
 
@@ -341,12 +343,25 @@ class PixArtAlphaTextProjection(nn.Module):
     """
 
     def __init__(
-        self, in_features, hidden_size, num_tokens=120, dtype: str = "float16"
+        self,
+        in_features,
+        hidden_size,
+        out_features=None,
+        act_fn="gelu_tanh",
+        dtype: str = "float16",
     ):
         super().__init__()
-        self.linear_1 = nn.Linear(
-            in_features, hidden_size, specialization="fast_gelu", dtype=dtype
-        )
+        if out_features is None:
+            out_features = hidden_size
+        self.linear_1 = nn.Linear(in_features, hidden_size, dtype=dtype)
+        if act_fn == "gelu_tanh":
+            self.act_1 = ops.fast_gelu
+        elif act_fn == "silu":
+            self.act_1 = ops.silu
+        elif act_fn == "silu_fp32":
+            self.act_1 = FP32SiLU()
+        else:
+            raise ValueError(f"Unknown activation function: {act_fn}")
         self.linear_2 = nn.Linear(hidden_size, hidden_size, dtype=dtype)
 
     def forward(self, caption):
