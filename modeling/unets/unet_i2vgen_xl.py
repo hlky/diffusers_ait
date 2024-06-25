@@ -4,17 +4,10 @@ from aitemplate.compiler import ops
 
 from aitemplate.frontend import nn, Tensor
 
-from ...utils import logging
 from ..activations import get_activation
 from ..attention import Attention, FeedForward
-from ..attention_processor import (
-    ADDED_KV_ATTENTION_PROCESSORS,
-    AttentionProcessor,
-    AttnAddedKVProcessor,
-    AttnProcessor,
-    CROSS_ATTENTION_PROCESSORS,
-)
-from ..embeddings import TimestepEmbedding, Timesteps
+from ..attention_processor import AttentionProcessor
+from ..embeddings import SiLU, TimestepEmbedding, Timesteps
 
 from ..transformers.transformer_temporal import TransformerTemporalModel
 from .unet_3d_blocks import (
@@ -39,9 +32,10 @@ class I2VGenXLTransformerTemporalEncoder(nn.Module):
         upcast_attention: bool = False,
         ff_inner_dim: Optional[int] = None,
         dropout: int = 0.0,
+        dtype: str = "float16",
     ):
         super().__init__()
-        self.norm1 = nn.LayerNorm(dim, elementwise_affine=True, eps=1e-5)
+        self.norm1 = nn.LayerNorm(dim, elementwise_affine=True, eps=1e-5, dtype=dtype)
         self.attn1 = Attention(
             query_dim=dim,
             heads=num_attention_heads,
@@ -50,6 +44,7 @@ class I2VGenXLTransformerTemporalEncoder(nn.Module):
             bias=False,
             upcast_attention=upcast_attention,
             out_bias=True,
+            dtype=dtype,
         )
         self.ff = FeedForward(
             dim,
@@ -58,6 +53,7 @@ class I2VGenXLTransformerTemporalEncoder(nn.Module):
             final_dropout=False,
             inner_dim=ff_inner_dim,
             bias=True,
+            dtype=dtype,
         )
 
     def forward(
@@ -67,13 +63,13 @@ class I2VGenXLTransformerTemporalEncoder(nn.Module):
         norm_hidden_states = self.norm1(hidden_states)
         attn_output = self.attn1(norm_hidden_states, encoder_hidden_states=None)
         hidden_states = attn_output + hidden_states
-        if hidden_states.ndim == 4:
-            hidden_states = hidden_states.squeeze(1)
+        if len(ops.size()(hidden_states)) == 4:
+            hidden_states = ops.squeeze(1)(hidden_states)
 
         ff_output = self.ff(hidden_states)
         hidden_states = ff_output + hidden_states
-        if hidden_states.ndim == 4:
-            hidden_states = hidden_states.squeeze(1)
+        if len(ops.size()(hidden_states)) == 4:
+            hidden_states = ops.squeeze(1)(hidden_states)
 
         return hidden_states
 
@@ -130,8 +126,11 @@ class I2VGenXLUNet(nn.Module):
         cross_attention_dim: int = 1024,
         attention_head_dim: Union[int, Tuple[int]] = 64,
         num_attention_heads: Optional[Union[int, Tuple[int]]] = None,
+        dtype: str = "float16",
     ):
         super().__init__()
+        self.dtype = dtype
+        self.cross_attention_dim = cross_attention_dim
 
         # When we first integrated the UNet into the library, we didn't have `attention_head_dim`. As a consequence
         # of that, we used `num_attention_heads` for arguments that actually denote attention head dimension. This
@@ -160,8 +159,12 @@ class I2VGenXLUNet(nn.Module):
             )
 
         # input
-        self.conv_in = nn.Conv2d(
-            in_channels + in_channels, block_out_channels[0], kernel_size=3, padding=1
+        self.conv_in = nn.Conv2dBias(
+            in_channels + in_channels,
+            block_out_channels[0],
+            kernel_size=3,
+            padding=1,
+            dtype=dtype,
         )
 
         self.transformer_in = TransformerTemporalModel(
@@ -170,15 +173,20 @@ class I2VGenXLUNet(nn.Module):
             in_channels=block_out_channels[0],
             num_layers=1,
             norm_num_groups=norm_num_groups,
+            dtype=dtype,
         )
 
         # image embedding
         self.image_latents_proj_in = nn.Sequential(
-            nn.Conv2d(4, in_channels * 4, 3, padding=1),
-            nn.SiLU(),
-            nn.Conv2d(in_channels * 4, in_channels * 4, 3, stride=1, padding=1),
-            nn.SiLU(),
-            nn.Conv2d(in_channels * 4, in_channels, 3, stride=1, padding=1),
+            nn.Conv2dBias(4, in_channels * 4, 3, padding=1, dtype=dtype),
+            SiLU(),
+            nn.Conv2dBias(
+                in_channels * 4, in_channels * 4, 3, stride=1, padding=1, dtype=dtype
+            ),
+            SiLU(),
+            nn.Conv2dBias(
+                in_channels * 4, in_channels, 3, stride=1, padding=1, dtype=dtype
+            ),
         )
         self.image_latents_temporal_encoder = I2VGenXLTransformerTemporalEncoder(
             dim=in_channels,
@@ -186,33 +194,43 @@ class I2VGenXLUNet(nn.Module):
             ff_inner_dim=in_channels * 4,
             attention_head_dim=in_channels,
             activation_fn="gelu",
+            dtype=dtype,
         )
         self.image_latents_context_embedding = nn.Sequential(
-            nn.Conv2d(4, in_channels * 8, 3, padding=1),
-            nn.SiLU(),
-            nn.AdaptiveAvgPool2d((32, 32)),
-            nn.Conv2d(in_channels * 8, in_channels * 16, 3, stride=2, padding=1),
-            nn.SiLU(),
-            nn.Conv2d(in_channels * 16, cross_attention_dim, 3, stride=2, padding=1),
+            nn.Conv2dBias(4, in_channels * 8, 3, padding=1, dtype=dtype),
+            SiLU(),
+            nn.AvgPool2d(32, 1, 0),
+            nn.Conv2dBias(
+                in_channels * 8, in_channels * 16, 3, stride=2, padding=1, dtype=dtype
+            ),
+            SiLU(),
+            nn.Conv2dBias(
+                in_channels * 16,
+                cross_attention_dim,
+                3,
+                stride=2,
+                padding=1,
+                dtype=dtype,
+            ),
         )
 
         # other embeddings -- time, context, fps, etc.
         time_embed_dim = block_out_channels[0] * 4
-        self.time_proj = Timesteps(block_out_channels[0], True, 0)
+        self.time_proj = Timesteps(block_out_channels[0], True, 0, dtype=dtype)
         timestep_input_dim = block_out_channels[0]
 
         self.time_embedding = TimestepEmbedding(
-            timestep_input_dim, time_embed_dim, act_fn="silu"
+            timestep_input_dim, time_embed_dim, act_fn="silu", dtype=dtype
         )
         self.context_embedding = nn.Sequential(
-            nn.Linear(cross_attention_dim, time_embed_dim),
-            nn.SiLU(),
-            nn.Linear(time_embed_dim, cross_attention_dim * in_channels),
+            nn.Linear(cross_attention_dim, time_embed_dim, dtype=dtype),
+            SiLU(),
+            nn.Linear(time_embed_dim, cross_attention_dim * in_channels, dtype=dtype),
         )
         self.fps_embedding = nn.Sequential(
-            nn.Linear(timestep_input_dim, time_embed_dim),
-            nn.SiLU(),
-            nn.Linear(time_embed_dim, time_embed_dim),
+            nn.Linear(timestep_input_dim, time_embed_dim, dtype=dtype),
+            SiLU(),
+            nn.Linear(time_embed_dim, time_embed_dim, dtype=dtype),
         )
 
         # blocks
@@ -243,6 +261,7 @@ class I2VGenXLUNet(nn.Module):
                 num_attention_heads=num_attention_heads[i],
                 downsample_padding=1,
                 dual_cross_attention=False,
+                dtype=dtype,
             )
             self.down_blocks.append(down_block)
 
@@ -257,6 +276,7 @@ class I2VGenXLUNet(nn.Module):
             num_attention_heads=num_attention_heads[-1],
             resnet_groups=norm_num_groups,
             dual_cross_attention=False,
+            dtype=dtype,
         )
 
         # count how many layers upsample the images
@@ -298,17 +318,21 @@ class I2VGenXLUNet(nn.Module):
                 num_attention_heads=reversed_num_attention_heads[i],
                 dual_cross_attention=False,
                 resolution_idx=i,
+                dtype=dtype,
             )
             self.up_blocks.append(up_block)
             prev_output_channel = output_channel
 
         # out
         self.conv_norm_out = nn.GroupNorm(
-            num_channels=block_out_channels[0], num_groups=norm_num_groups, eps=1e-05
+            num_channels=block_out_channels[0],
+            num_groups=norm_num_groups,
+            eps=1e-05,
+            dtype=dtype,
         )
         self.conv_act = get_activation("silu")
-        self.conv_out = nn.Conv2d(
-            block_out_channels[0], out_channels, kernel_size=3, padding=1
+        self.conv_out = nn.Conv2dBias(
+            block_out_channels[0], out_channels, kernel_size=3, padding=1, dtype=dtype
         )
 
     # Copied from diffusers.models.unets.unet_2d_condition.UNet2DConditionModel.set_attn_processor
@@ -348,87 +372,6 @@ class I2VGenXLUNet(nn.Module):
         for name, module in self.named_children():
             fn_recursive_attn_processor(name, module, processor)
 
-    # Copied from diffusers.models.unets.unet_3d_condition.UNet3DConditionModel.enable_forward_chunking
-    def enable_forward_chunking(
-        self, chunk_size: Optional[int] = None, dim: int = 0
-    ) -> None:
-        """
-        Sets the attention processor to use [feed forward
-        chunking](https://huggingface.co/blog/reformer#2-chunked-feed-forward-layers).
-
-        Parameters:
-            chunk_size (`int`, *optional*):
-                The chunk size of the feed-forward layers. If not specified, will run feed-forward layer individually
-                over each tensor of dim=`dim`.
-            dim (`int`, *optional*, defaults to `0`):
-                The dimension over which the feed-forward computation should be chunked. Choose between dim=0 (batch)
-                or dim=1 (sequence length).
-        """
-        if dim not in [0, 1]:
-            raise ValueError(f"Make sure to set `dim` to either 0 or 1, not {dim}")
-
-        # By default chunk size is 1
-        chunk_size = chunk_size or 1
-
-        def fn_recursive_feed_forward(module: nn.Module, chunk_size: int, dim: int):
-            if hasattr(module, "set_chunk_feed_forward"):
-                module.set_chunk_feed_forward(chunk_size=chunk_size, dim=dim)
-
-            for child in module.children():
-                fn_recursive_feed_forward(child, chunk_size, dim)
-
-        for module in self.children():
-            fn_recursive_feed_forward(module, chunk_size, dim)
-
-    # Copied from diffusers.models.unets.unet_3d_condition.UNet3DConditionModel.disable_forward_chunking
-    def disable_forward_chunking(self):
-        def fn_recursive_feed_forward(module: nn.Module, chunk_size: int, dim: int):
-            if hasattr(module, "set_chunk_feed_forward"):
-                module.set_chunk_feed_forward(chunk_size=chunk_size, dim=dim)
-
-            for child in module.children():
-                fn_recursive_feed_forward(child, chunk_size, dim)
-
-        for module in self.children():
-            fn_recursive_feed_forward(module, None, 0)
-
-    # Copied from diffusers.models.unets.unet_2d_condition.UNet2DConditionModel.enable_freeu
-    def enable_freeu(self, s1, s2, b1, b2):
-        r"""Enables the FreeU mechanism from https://arxiv.org/abs/2309.11497.
-
-        The suffixes after the scaling factors represent the stage blocks where they are being applied.
-
-        Please refer to the [official repository](https://github.com/ChenyangSi/FreeU) for combinations of values that
-        are known to work well for different pipelines such as Stable Diffusion v1, v2, and Stable Diffusion XL.
-
-        Args:
-            s1 (`float`):
-                Scaling factor for stage 1 to attenuate the contributions of the skip features. This is done to
-                mitigate the "oversmoothing effect" in the enhanced denoising process.
-            s2 (`float`):
-                Scaling factor for stage 2 to attenuate the contributions of the skip features. This is done to
-                mitigate the "oversmoothing effect" in the enhanced denoising process.
-            b1 (`float`): Scaling factor for stage 1 to amplify the contributions of backbone features.
-            b2 (`float`): Scaling factor for stage 2 to amplify the contributions of backbone features.
-        """
-        for i, upsample_block in enumerate(self.up_blocks):
-            setattr(upsample_block, "s1", s1)
-            setattr(upsample_block, "s2", s2)
-            setattr(upsample_block, "b1", b1)
-            setattr(upsample_block, "b2", b2)
-
-    # Copied from diffusers.models.unets.unet_2d_condition.UNet2DConditionModel.disable_freeu
-    def disable_freeu(self):
-        """Disables the FreeU mechanism."""
-        freeu_keys = {"s1", "s2", "b1", "b2"}
-        for i, upsample_block in enumerate(self.up_blocks):
-            for k in freeu_keys:
-                if (
-                    hasattr(upsample_block, k)
-                    or getattr(upsample_block, k, None) is not None
-                ):
-                    setattr(upsample_block, k, None)
-
     def forward(
         self,
         sample: Tensor,
@@ -467,7 +410,7 @@ class I2VGenXLUNet(nn.Module):
                 If `return_dict` is True, an [`~models.unets.unet_3d_condition.UNet3DConditionOutput`] is returned,
                 otherwise a `tuple` is returned where the first element is the sample tensor.
         """
-        batch_size, channels, num_frames, height, width = sample.shape
+        batch_size, num_frames, height, width, channels = ops.size()(sample)
 
         # By default samples have to be AT least a multiple of the overall upsampling factor.
         # The overall upsampling factor is equal to 2 ** (# num of upsampling layears).
@@ -479,28 +422,29 @@ class I2VGenXLUNet(nn.Module):
         forward_upsample_size = False
         upsample_size = None
 
-        if any(s % default_overall_up_factor != 0 for s in sample.shape[-2:]):
-            forward_upsample_size = True
+        for dim in ops.size()(sample)[2:3]:
+            if dim % default_overall_up_factor != 0:
+                # Forward upsample size to force interpolation output size.
+                forward_upsample_size = True
+                break
 
         # 1. time
         timesteps = timestep
-        if len(timesteps.shape) == 0:
-            timesteps = timesteps[None].to(sample.device)
 
         # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
-        timesteps = timesteps.expand(sample.shape[0])
+        timesteps = ops.expand()(timesteps, [batch_size])
         t_emb = self.time_proj(timesteps)
 
         # timesteps does not contain any weights and will always return f32 tensors
         # but time_embedding might actually be running in fp16. so we need to cast here.
         # there might be better ways to encapsulate this.
-        t_emb = t_emb.to(dtype=self.dtype)
+        t_emb = ops.cast()(t_emb, dtype=self.dtype)
         t_emb = self.time_embedding(t_emb, timestep_cond)
 
         # 2. FPS
         # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
-        fps = fps.expand(fps.shape[0])
-        fps_emb = self.fps_embedding(self.time_proj(fps).to(dtype=self.dtype))
+        fps = ops.expand()(fps, shape=[ops.size()(fps, dim=0)])
+        fps_emb = self.fps_embedding(ops.cast()(self.time_proj(fps), dtype=self.dtype))
 
         # 3. time + FPS embeddings.
         emb = t_emb + fps_emb
@@ -511,58 +455,72 @@ class I2VGenXLUNet(nn.Module):
         # AND the image embeddings from the input image. For images, both VAE encodings
         # and the CLIP image embeddings are incorporated.
         # So the final `context_embeddings` becomes the query for cross-attention.
-        context_emb = sample.new_zeros(batch_size, 0, self.config.cross_attention_dim)
-        context_emb = torch.cat([context_emb, encoder_hidden_states], dim=1)
+        context_emb = ops.full()(
+            [batch_size, 0, self.cross_attention_dim], fill_value=0.0
+        )
+        context_emb = ops.concatenate()([context_emb, encoder_hidden_states], dim=1)
 
-        image_latents_for_context_embds = image_latents[:, :, :1, :]
-        image_latents_context_embs = image_latents_for_context_embds.permute(
-            0, 2, 1, 3, 4
-        ).reshape(
-            image_latents_for_context_embds.shape[0]
-            * image_latents_for_context_embds.shape[2],
-            image_latents_for_context_embds.shape[1],
-            image_latents_for_context_embds.shape[3],
-            image_latents_for_context_embds.shape[4],
+        image_latents_for_context_embds = ops.dynamic_slice()(
+            image_latents, start_indices=[0, 0, 0, 0], end_indices=[None, None, 1, None]
+        )
+        image_latents_context_embs = ops.reshape()(
+            image_latents_for_context_embds,
+            [
+                ops.size()(image_latents_for_context_embds, dim=0)
+                * ops.size()(image_latents_for_context_embds, dim=1),
+                ops.size()(image_latents_for_context_embds, dim=2),
+                ops.size()(image_latents_for_context_embds, dim=3),
+                ops.size()(image_latents_for_context_embds, dim=4),
+            ],
         )
         image_latents_context_embs = self.image_latents_context_embedding(
             image_latents_context_embs
         )
 
-        _batch_size, _channels, _height, _width = image_latents_context_embs.shape
-        image_latents_context_embs = image_latents_context_embs.permute(
-            0, 2, 3, 1
-        ).reshape(_batch_size, _height * _width, _channels)
-        context_emb = torch.cat([context_emb, image_latents_context_embs], dim=1)
+        _batch_size, _height, _width, _channels = ops.size()(image_latents_context_embs)
+        image_latents_context_embs = ops.reshape()(
+            image_latents_context_embs, [_batch_size, _height * _width, _channels]
+        )
+        context_emb = ops.concatenate()(
+            [context_emb, image_latents_context_embs], dim=1
+        )
 
         image_emb = self.context_embedding(image_embeddings)
-        image_emb = image_emb.view(
-            -1, self.config.in_channels, self.config.cross_attention_dim
+        image_emb = ops.reshape()(
+            image_emb, [-1, self.config.in_channels, self.config.cross_attention_dim]
         )
-        context_emb = torch.cat([context_emb, image_emb], dim=1)
+        context_emb = ops.concatenate()([context_emb, image_emb], dim=1)
         context_emb = context_emb.repeat_interleave(repeats=num_frames, dim=0)
 
-        image_latents = image_latents.permute(0, 2, 1, 3, 4).reshape(
-            image_latents.shape[0] * image_latents.shape[2],
-            image_latents.shape[1],
-            image_latents.shape[3],
-            image_latents.shape[4],
+        image_latents = ops.reshape()(
+            image_latents,
+            [
+                ops.size()(image_latents, dim=0) * ops.size()(image_latents, dim=1),
+                ops.size()(image_latents, dim=2),
+                ops.size()(image_latents, dim=3),
+                ops.size()(image_latents, dim=4),
+            ],
         )
         image_latents = self.image_latents_proj_in(image_latents)
-        image_latents = (
-            image_latents[None, :]
-            .reshape(batch_size, num_frames, channels, height, width)
-            .permute(0, 3, 4, 1, 2)
-            .reshape(batch_size * height * width, num_frames, channels)
+        image_latents = ops.reshape()(
+            ops.reshape()(
+                ops.unsqueeze(0)(image_latents),
+                [batch_size, num_frames, height, width, channels],
+            ),
+            [batch_size * height * width, num_frames, channels],
         )
         image_latents = self.image_latents_temporal_encoder(image_latents)
-        image_latents = image_latents.reshape(
-            batch_size, height, width, num_frames, channels
-        ).permute(0, 4, 3, 1, 2)
+        image_latents = ops.permute()(
+            ops.reshape()(
+                image_latents, [batch_size, height, width, num_frames, channels]
+            ),
+            [0, 3, 1, 2, 4],
+        )
 
         # 5. pre-process
-        sample = torch.cat([sample, image_latents], dim=1)
-        sample = sample.permute(0, 2, 1, 3, 4).reshape(
-            (sample.shape[0] * num_frames, -1) + sample.shape[3:]
+        sample = ops.concatenate()([sample, image_latents], dim=1)
+        sample = ops.reshape()(
+            sample, [batch_size * num_frames, height, width, channels]
         )
         sample = self.conv_in(sample)
         sample = self.transformer_in(
@@ -614,7 +572,7 @@ class I2VGenXLUNet(nn.Module):
             # if we have not reached the final block and need to forward the
             # upsample size, we do it here
             if not is_final_block and forward_upsample_size:
-                upsample_size = down_block_res_samples[-1].shape[2:]
+                upsample_size = ops.size()(down_block_res_samples[-1])[1:2]
 
             if (
                 hasattr(upsample_block, "has_cross_attention")
@@ -644,11 +602,9 @@ class I2VGenXLUNet(nn.Module):
 
         sample = self.conv_out(sample)
 
-        # reshape to (batch, channel, framerate, width, height)
-        sample = (
-            sample[None, :]
-            .reshape((-1, num_frames) + sample.shape[1:])
-            .permute(0, 2, 1, 3, 4)
+        # reshape to (batch, framerate, width, height, channel)
+        sample = ops.reshape()(
+            ops.unsqueeze(0)(sample), [-1, num_frames] + ops.size()(sample)[1:]
         )
 
         if not return_dict:
