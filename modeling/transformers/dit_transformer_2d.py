@@ -65,6 +65,7 @@ class DiTTransformer2DModel(nn.Module):
         norm_type: str = "ada_norm_zero",
         norm_elementwise_affine: bool = False,
         norm_eps: float = 1e-5,
+        dtype: str = "float16",
     ):
         super().__init__()
 
@@ -80,50 +81,51 @@ class DiTTransformer2DModel(nn.Module):
 
         # Set some common variables used across the board.
         self.attention_head_dim = attention_head_dim
-        self.inner_dim = (
-            self.config.num_attention_heads * self.config.attention_head_dim
-        )
+        self.inner_dim = num_attention_heads * attention_head_dim
         self.out_channels = in_channels if out_channels is None else out_channels
         self.gradient_checkpointing = False
 
         # 2. Initialize the position embedding and transformer blocks.
-        self.height = self.config.sample_size
-        self.width = self.config.sample_size
+        self.height = sample_size
+        self.width = sample_size
 
-        self.patch_size = self.config.patch_size
+        self.patch_size = patch_size
         self.pos_embed = PatchEmbed(
-            height=self.config.sample_size,
-            width=self.config.sample_size,
-            patch_size=self.config.patch_size,
-            in_channels=self.config.in_channels,
+            height=sample_size,
+            width=sample_size,
+            patch_size=patch_size,
+            in_channels=in_channels,
             embed_dim=self.inner_dim,
+            dtype=dtype,
         )
 
         self.transformer_blocks = nn.ModuleList(
             [
                 BasicTransformerBlock(
                     self.inner_dim,
-                    self.config.num_attention_heads,
-                    self.config.attention_head_dim,
-                    dropout=self.config.dropout,
-                    activation_fn=self.config.activation_fn,
-                    num_embeds_ada_norm=self.config.num_embeds_ada_norm,
-                    attention_bias=self.config.attention_bias,
-                    upcast_attention=self.config.upcast_attention,
+                    num_attention_heads,
+                    attention_head_dim,
+                    dropout=dropout,
+                    activation_fn=activation_fn,
+                    num_embeds_ada_norm=num_embeds_ada_norm,
+                    attention_bias=attention_bias,
+                    upcast_attention=upcast_attention,
                     norm_type=norm_type,
-                    norm_elementwise_affine=self.config.norm_elementwise_affine,
-                    norm_eps=self.config.norm_eps,
+                    norm_elementwise_affine=norm_elementwise_affine,
+                    norm_eps=norm_eps,
+                    dtype=dtype,
                 )
-                for _ in range(self.config.num_layers)
+                for _ in range(num_layers)
             ]
         )
 
         # 3. Output blocks.
-        self.norm_out = nn.LayerNorm(self.inner_dim, elementwise_affine=False, eps=1e-6)
-        self.proj_out_1 = nn.Linear(self.inner_dim, 2 * self.inner_dim)
+        self.norm_out = nn.LayerNorm(
+            self.inner_dim, elementwise_affine=False, eps=1e-6, dtype=dtype
+        )
+        self.proj_out_1 = nn.Linear(self.inner_dim, 2 * self.inner_dim, dtype=dtype)
         self.proj_out_2 = nn.Linear(
-            self.inner_dim,
-            self.config.patch_size * self.config.patch_size * self.out_channels,
+            self.inner_dim, patch_size * patch_size * self.out_channels, dtype=dtype
         )
 
     def forward(
@@ -159,8 +161,8 @@ class DiTTransformer2DModel(nn.Module):
         """
         # 1. Input
         height, width = (
-            hidden_states.shape[-2] // self.patch_size,
-            hidden_states.shape[-1] // self.patch_size,
+            ops.size()(hidden_states, dim=1) / self.patch_size,
+            ops.size()(hidden_states, dim=2) / self.patch_size,
         )
         hidden_states = self.pos_embed(hidden_states)
 
@@ -178,34 +180,35 @@ class DiTTransformer2DModel(nn.Module):
 
         # 3. Output
         conditioning = self.transformer_blocks[0].norm1.emb(
-            timestep, class_labels, hidden_dtype=hidden_states.dtype
+            timestep, class_labels, hidden_dtype=hidden_states.dtype()
         )
-        shift, scale = self.proj_out_1(ops.silu(conditioning)).chunk(2, dim=1)
-        hidden_states = (
-            self.norm_out(hidden_states) * (1 + scale[:, None]) + shift[:, None]
+        shift, scale = ops.chunk()(
+            self.proj_out_1(ops.silu(conditioning)), chunks=2, dim=1
         )
+        hidden_states = self.norm_out(hidden_states) * (
+            1 + ops.unsqueeze(1)(scale)
+        ) + ops.unsqueeze(1)(shift)
         hidden_states = self.proj_out_2(hidden_states)
 
         # unpatchify
-        height = width = int(hidden_states.shape[1] ** 0.5)
-        hidden_states = hidden_states.reshape(
-            shape=(
+        height = width = ops.size()(hidden_states, dim=1) ** 0.5
+        hidden_states = ops.reshape()(
+            hidden_states,
+            [
                 -1,
                 height,
                 width,
                 self.patch_size,
                 self.patch_size,
                 self.out_channels,
-            )
+            ],
         )
-        hidden_states = torch.einsum("nhwpqc->nchpwq", hidden_states)
-        output = hidden_states.reshape(
-            shape=(
-                -1,
-                self.out_channels,
-                height * self.patch_size,
-                width * self.patch_size,
-            )
+        hidden_states = ops.permute()(
+            hidden_states, [0, 1, 3, 2, 4, 5]
+        )  # torch: nhwpqc->nchpwq
+        output = ops.reshape()(
+            hidden_states,
+            [-1, height * self.patch_size, width * self.patch_size, self.out_channels],
         )
 
         if not return_dict:
