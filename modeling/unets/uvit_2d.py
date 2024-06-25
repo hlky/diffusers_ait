@@ -5,13 +5,7 @@ from aitemplate.compiler import ops
 from aitemplate.frontend import nn, Tensor
 
 from ..attention import BasicTransformerBlock, SkipFFTransformerBlock
-from ..attention_processor import (
-    ADDED_KV_ATTENTION_PROCESSORS,
-    AttentionProcessor,
-    AttnAddedKVProcessor,
-    AttnProcessor,
-    CROSS_ATTENTION_PROCESSORS,
-)
+from ..attention_processor import AttentionProcessor
 from ..embeddings import get_timestep_embedding, TimestepEmbedding
 
 from ..normalization import GlobalResponseNorm, RMSNorm
@@ -53,12 +47,16 @@ class UVit2DModel(nn.Module):
         layer_norm_eps: float = 1e-6,
         ln_elementwise_affine: bool = True,
         sample_size: int = 64,
+        dtype: str = "float16",
     ):
         super().__init__()
+        self.micro_cond_encode_dim = micro_cond_encode_dim
 
-        self.encoder_proj = nn.Linear(encoder_hidden_size, hidden_size, bias=use_bias)
+        self.encoder_proj = nn.Linear(
+            encoder_hidden_size, hidden_size, bias=use_bias, dtype=dtype
+        )
         self.encoder_proj_layer_norm = RMSNorm(
-            hidden_size, layer_norm_eps, ln_elementwise_affine
+            hidden_size, layer_norm_eps, ln_elementwise_affine, dtype=dtype
         )
 
         self.embed = UVit2DConvEmbed(
@@ -68,12 +66,14 @@ class UVit2DModel(nn.Module):
             ln_elementwise_affine,
             layer_norm_eps,
             use_bias,
+            dtype=dtype,
         )
 
         self.cond_embed = TimestepEmbedding(
             micro_cond_embed_dim + cond_embed_dim,
             hidden_size,
             sample_proj_bias=use_bias,
+            dtype=dtype,
         )
 
         self.down_block = UVitBlock(
@@ -88,13 +88,14 @@ class UVit2DModel(nn.Module):
             attention_dropout,
             downsample,
             False,
+            dtype=dtype,
         )
 
         self.project_to_hidden_norm = RMSNorm(
-            block_out_channels, layer_norm_eps, ln_elementwise_affine
+            block_out_channels, layer_norm_eps, ln_elementwise_affine, dtype=dtype
         )
         self.project_to_hidden = nn.Linear(
-            block_out_channels, hidden_size, bias=use_bias
+            block_out_channels, hidden_size, bias=use_bias, dtype=dtype
         )
 
         self.transformer_layers = nn.ModuleList(
@@ -114,16 +115,17 @@ class UVit2DModel(nn.Module):
                     ff_inner_dim=intermediate_size,
                     ff_bias=use_bias,
                     attention_out_bias=use_bias,
+                    dtype=dtype,
                 )
                 for _ in range(num_hidden_layers)
             ]
         )
 
         self.project_from_hidden_norm = RMSNorm(
-            hidden_size, layer_norm_eps, ln_elementwise_affine
+            hidden_size, layer_norm_eps, ln_elementwise_affine, dtype=dtype
         )
         self.project_from_hidden = nn.Linear(
-            hidden_size, block_out_channels, bias=use_bias
+            hidden_size, block_out_channels, bias=use_bias, dtype=dtype
         )
 
         self.up_block = UVitBlock(
@@ -138,6 +140,7 @@ class UVit2DModel(nn.Module):
             attention_dropout,
             downsample=False,
             upsample=upsample,
+            dtype=dtype,
         )
 
         self.mlm_layer = ConvMlmLayer(
@@ -147,34 +150,38 @@ class UVit2DModel(nn.Module):
             ln_elementwise_affine,
             layer_norm_eps,
             codebook_size,
+            dtype=dtype,
         )
 
         self.gradient_checkpointing = False
 
     def forward(
         self,
-        input_ids,
-        encoder_hidden_states,
-        pooled_text_emb,
-        micro_conds,
+        input_ids: Tensor,
+        encoder_hidden_states: Tensor,
+        pooled_text_emb: Tensor,
+        micro_conds: Tensor,
         cross_attention_kwargs=None,
     ):
         encoder_hidden_states = self.encoder_proj(encoder_hidden_states)
         encoder_hidden_states = self.encoder_proj_layer_norm(encoder_hidden_states)
 
         micro_cond_embeds = get_timestep_embedding(
-            micro_conds.flatten(),
-            self.config.micro_cond_encode_dim,
+            ops.flatten()(micro_conds),
+            self.micro_cond_encode_dim,
             flip_sin_to_cos=True,
             downscale_freq_shift=0,
+            arange_name="micro_cond_embeds",
         )
 
-        micro_cond_embeds = micro_cond_embeds.reshape((input_ids.shape[0], -1))
+        micro_cond_embeds = ops.reshape()(
+            micro_cond_embeds, [ops.size()(input_ids, dim=0), -1]
+        )
 
-        pooled_text_emb = torch.cat([pooled_text_emb, micro_cond_embeds], dim=1)
-        pooled_text_emb = pooled_text_emb.to(dtype=self.dtype)
-        pooled_text_emb = self.cond_embed(pooled_text_emb).to(
-            encoder_hidden_states.dtype
+        pooled_text_emb = ops.concatenate()([pooled_text_emb, micro_cond_embeds], dim=1)
+        pooled_text_emb = ops.cast()(pooled_text_emb, dtype=self.dtype())
+        pooled_text_emb = ops.cast()(
+            self.cond_embed(pooled_text_emb), encoder_hidden_states.dtype()
         )
 
         hidden_states = self.embed(input_ids)
@@ -186,9 +193,9 @@ class UVit2DModel(nn.Module):
             cross_attention_kwargs=cross_attention_kwargs,
         )
 
-        batch_size, channels, height, width = hidden_states.shape
-        hidden_states = hidden_states.permute(0, 2, 3, 1).reshape(
-            batch_size, height * width, channels
+        batch_size, height, width, channels = ops.size()(hidden_states)
+        hidden_states = ops.reshape()(
+            hidden_states, [batch_size, height * width, channels]
         )
 
         hidden_states = self.project_to_hidden_norm(hidden_states)
@@ -205,9 +212,9 @@ class UVit2DModel(nn.Module):
         hidden_states = self.project_from_hidden_norm(hidden_states)
         hidden_states = self.project_from_hidden(hidden_states)
 
-        hidden_states = hidden_states.reshape(
-            batch_size, height, width, channels
-        ).permute(0, 3, 1, 2)
+        hidden_states = ops.reshape()(
+            hidden_states, [batch_size, height, width, channels]
+        )
 
         hidden_states = self.up_block(
             hidden_states,
@@ -260,17 +267,27 @@ class UVit2DModel(nn.Module):
 
 class UVit2DConvEmbed(nn.Module):
     def __init__(
-        self, in_channels, block_out_channels, vocab_size, elementwise_affine, eps, bias
+        self,
+        in_channels: int,
+        block_out_channels: int,
+        vocab_size: int,
+        elementwise_affine: bool,
+        eps: float,
+        bias: bool,
+        dtype: str = "float16",
     ):
         super().__init__()
-        self.embeddings = nn.Embedding(vocab_size, in_channels)
-        self.layer_norm = RMSNorm(in_channels, eps, elementwise_affine)
-        self.conv = nn.Conv2d(in_channels, block_out_channels, kernel_size=1, bias=bias)
+        self.embeddings = nn.Embedding([vocab_size, in_channels], dtype=dtype)
+        self.layer_norm = RMSNorm(in_channels, eps, elementwise_affine, dtype=dtype)
+        self.conv = (
+            nn.Conv2dBias(in_channels, block_out_channels, kernel_size=1, dtype=dtype)
+            if bias
+            else nn.Conv2d(in_channels, block_out_channels, kernel_size=1, dtype=dtype)
+        )
 
     def forward(self, input_ids):
         embeddings = self.embeddings(input_ids)
-        embeddings = self.layer_norm(embeddings)
-        embeddings = embeddings.permute(0, 3, 1, 2)
+        embeddings = self.layer_norm(embeddings)  # NOTE: torch .permute(0, 3, 1, 2)
         embeddings = self.conv(embeddings)
         return embeddings
 
@@ -289,6 +306,7 @@ class UVitBlock(nn.Module):
         attention_dropout,
         downsample: bool,
         upsample: bool,
+        dtype: str = "float16",
     ):
         super().__init__()
 
@@ -303,6 +321,7 @@ class UVitBlock(nn.Module):
                 eps=layer_norm_eps,
                 elementwise_affine=ln_elementwise_affine,
                 bias=use_bias,
+                dtype=dtype,
             )
         else:
             self.downsample = None
@@ -316,6 +335,7 @@ class UVitBlock(nn.Module):
                     use_bias,
                     hidden_dropout,
                     hidden_size,
+                    dtype=dtype,
                 )
                 for i in range(num_res_blocks)
             ]
@@ -333,6 +353,7 @@ class UVitBlock(nn.Module):
                     channels,
                     attention_bias=use_bias,
                     attention_out_bias=use_bias,
+                    dtype=dtype,
                 )
                 for _ in range(num_res_blocks)
             ]
@@ -350,12 +371,17 @@ class UVitBlock(nn.Module):
                 elementwise_affine=ln_elementwise_affine,
                 bias=use_bias,
                 interpolate=False,
+                dtype=dtype,
             )
         else:
             self.upsample = None
 
     def forward(
-        self, x, pooled_text_emb, encoder_hidden_states, cross_attention_kwargs
+        self,
+        x: Tensor,
+        pooled_text_emb: Tensor,
+        encoder_hidden_states: Tensor,
+        cross_attention_kwargs,
     ):
         if self.downsample is not None:
             x = self.downsample(x)
@@ -363,14 +389,14 @@ class UVitBlock(nn.Module):
         for res_block, attention_block in zip(self.res_blocks, self.attention_blocks):
             x = res_block(x, pooled_text_emb)
 
-            batch_size, channels, height, width = x.shape
-            x = x.view(batch_size, channels, height * width).permute(0, 2, 1)
+            batch_size, height, width, channels = ops.size()(x)
+            x = ops.reshape()(x, [batch_size, height * width, channels])
             x = attention_block(
                 x,
                 encoder_hidden_states=encoder_hidden_states,
                 cross_attention_kwargs=cross_attention_kwargs,
             )
-            x = x.permute(0, 2, 1).view(batch_size, channels, height, width)
+            x = ops.reshape()(x, [batch_size, height, width, channels])
 
         if self.upsample is not None:
             x = self.upsample(x)
@@ -388,34 +414,51 @@ class ConvNextBlock(nn.Module):
         hidden_dropout,
         hidden_size,
         res_ffn_factor=4,
+        dtype: str = "float16",
     ):
         super().__init__()
-        self.depthwise = nn.Conv2d(
-            channels,
-            channels,
-            kernel_size=3,
-            padding=1,
-            groups=channels,
-            bias=use_bias,
+        self.depthwise = (
+            nn.Conv2dBias(
+                channels,
+                channels,
+                kernel_size=3,
+                padding=1,
+                groups=channels,
+                dtype=dtype,
+            )
+            if use_bias
+            else nn.Conv2d(
+                channels,
+                channels,
+                kernel_size=3,
+                padding=1,
+                groups=channels,
+                dtype=dtype,
+            )
         )
-        self.norm = RMSNorm(channels, layer_norm_eps, ln_elementwise_affine)
+        self.norm = RMSNorm(
+            channels, layer_norm_eps, ln_elementwise_affine, dtype=dtype
+        )
         self.channelwise_linear_1 = nn.Linear(
-            channels, int(channels * res_ffn_factor), bias=use_bias
+            channels, int(channels * res_ffn_factor), bias=use_bias, dtype=dtype
         )
-        self.channelwise_act = nn.GELU()
-        self.channelwise_norm = GlobalResponseNorm(int(channels * res_ffn_factor))
+        self.channelwise_act = ops.gelu
+        self.channelwise_norm = GlobalResponseNorm(
+            int(channels * res_ffn_factor), dtype=dtype
+        )
         self.channelwise_linear_2 = nn.Linear(
-            int(channels * res_ffn_factor), channels, bias=use_bias
+            int(channels * res_ffn_factor), channels, bias=use_bias, dtype=dtype
         )
         self.channelwise_dropout = nn.Dropout(hidden_dropout)
-        self.cond_embeds_mapper = nn.Linear(hidden_size, channels * 2, use_bias)
+        self.cond_embeds_mapper = nn.Linear(
+            hidden_size, channels * 2, use_bias, dtype=dtype
+        )
 
-    def forward(self, x, cond_embeds):
+    def forward(self, x: Tensor, cond_embeds: Tensor):
         x_res = x
 
         x = self.depthwise(x)
 
-        x = x.permute(0, 2, 3, 1)
         x = self.norm(x)
 
         x = self.channelwise_linear_1(x)
@@ -424,12 +467,14 @@ class ConvNextBlock(nn.Module):
         x = self.channelwise_linear_2(x)
         x = self.channelwise_dropout(x)
 
-        x = x.permute(0, 3, 1, 2)
-
         x = x + x_res
 
-        scale, shift = self.cond_embeds_mapper(F.silu(cond_embeds)).chunk(2, dim=1)
-        x = x * (1 + scale[:, :, None, None]) + shift[:, :, None, None]
+        scale, shift = ops.chunk()(
+            self.cond_embeds_mapper(ops.silu(cond_embeds)), 2, dim=1
+        )
+        x = x * (1 + ops.unsqueeze(-1)(ops.unsqueeze(-1)(scale))) + ops.unsqueeze(-1)(
+            ops.unsqueeze(-1)(shift)
+        )
 
         return x
 
@@ -443,18 +488,23 @@ class ConvMlmLayer(nn.Module):
         ln_elementwise_affine: bool,
         layer_norm_eps: float,
         codebook_size: int,
+        dtype: str = "float16",
     ):
         super().__init__()
-        self.conv1 = nn.Conv2d(
-            block_out_channels, in_channels, kernel_size=1, bias=use_bias
+        self.conv1 = (
+            nn.Conv2dBias(block_out_channels, in_channels, kernel_size=1, dtype=dtype)
+            if use_bias
+            else nn.Conv2d(block_out_channels, in_channels, kernel_size=1, dtype=dtype)
         )
         self.layer_norm = RMSNorm(in_channels, layer_norm_eps, ln_elementwise_affine)
-        self.conv2 = nn.Conv2d(in_channels, codebook_size, kernel_size=1, bias=use_bias)
+        self.conv2 = (
+            nn.Conv2dBias(in_channels, codebook_size, kernel_size=1, dtype=dtype)
+            if use_bias
+            else nn.Conv2d(in_channels, codebook_size, kernel_size=1, dtype=dtype)
+        )
 
     def forward(self, hidden_states):
         hidden_states = self.conv1(hidden_states)
-        hidden_states = self.layer_norm(hidden_states.permute(0, 2, 3, 1)).permute(
-            0, 3, 1, 2
-        )
+        hidden_states = self.layer_norm(hidden_states)  # NOTE: pytorch permute
         logits = self.conv2(hidden_states)
         return logits
