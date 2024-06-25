@@ -74,12 +74,16 @@ class SD3Transformer2DModel(nn.Module):
             in_channels=in_channels,
             embed_dim=self.inner_dim,
             pos_embed_max_size=pos_embed_max_size,  # hard-code for now.
+            dtype=dtype,
         )
         self.time_text_embed = CombinedTimestepTextProjEmbeddings(
             embedding_dim=self.inner_dim,
             pooled_projection_dim=pooled_projection_dim,
+            dtype=dtype,
         )
-        self.context_embedder = nn.Linear(joint_attention_dim, caption_projection_dim)
+        self.context_embedder = nn.Linear(
+            joint_attention_dim, caption_projection_dim, dtype=dtype
+        )
 
         # `attention_head_dim` is doubled to account for the mixing.
         # It needs to crafted when we get the actual checkpoints.
@@ -96,10 +100,17 @@ class SD3Transformer2DModel(nn.Module):
         )
 
         self.norm_out = AdaLayerNormContinuous(
-            self.inner_dim, self.inner_dim, elementwise_affine=False, eps=1e-6
+            self.inner_dim,
+            self.inner_dim,
+            elementwise_affine=False,
+            eps=1e-6,
+            dtype=dtype,
         )
         self.proj_out = nn.Linear(
-            self.inner_dim, patch_size * patch_size * self.out_channels, bias=True
+            self.inner_dim,
+            patch_size * patch_size * self.out_channels,
+            bias=True,
+            dtype=dtype,
         )
 
         self.gradient_checkpointing = False
