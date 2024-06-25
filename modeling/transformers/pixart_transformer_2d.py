@@ -85,6 +85,7 @@ class PixArtTransformer2DModel(nn.Module):
         use_additional_conditions: Optional[bool] = None,
         caption_channels: Optional[int] = None,
         attention_type: Optional[str] = "default",
+        dtype: str = "float16",
     ):
         super().__init__()
 
@@ -100,9 +101,7 @@ class PixArtTransformer2DModel(nn.Module):
 
         # Set some common variables used across the board.
         self.attention_head_dim = attention_head_dim
-        self.inner_dim = (
-            self.config.num_attention_heads * self.config.attention_head_dim
-        )
+        self.inner_dim = num_attention_heads * attention_head_dim
         self.out_channels = in_channels if out_channels is None else out_channels
         if use_additional_conditions is None:
             if sample_size == 128:
@@ -114,61 +113,64 @@ class PixArtTransformer2DModel(nn.Module):
         self.gradient_checkpointing = False
 
         # 2. Initialize the position embedding and transformer blocks.
-        self.height = self.config.sample_size
-        self.width = self.config.sample_size
+        self.height = sample_size
+        self.width = sample_size
 
         interpolation_scale = (
-            self.config.interpolation_scale
-            if self.config.interpolation_scale is not None
-            else max(self.config.sample_size // 64, 1)
+            interpolation_scale
+            if interpolation_scale is not None
+            else max(sample_size // 64, 1)
         )
         self.pos_embed = PatchEmbed(
-            height=self.config.sample_size,
-            width=self.config.sample_size,
-            patch_size=self.config.patch_size,
-            in_channels=self.config.in_channels,
+            height=sample_size,
+            width=sample_size,
+            patch_size=patch_size,
+            in_channels=in_channels,
             embed_dim=self.inner_dim,
             interpolation_scale=interpolation_scale,
+            dtype=dtype,
         )
 
         self.transformer_blocks = nn.ModuleList(
             [
                 BasicTransformerBlock(
                     self.inner_dim,
-                    self.config.num_attention_heads,
-                    self.config.attention_head_dim,
-                    dropout=self.config.dropout,
-                    cross_attention_dim=self.config.cross_attention_dim,
-                    activation_fn=self.config.activation_fn,
-                    num_embeds_ada_norm=self.config.num_embeds_ada_norm,
-                    attention_bias=self.config.attention_bias,
-                    upcast_attention=self.config.upcast_attention,
+                    num_attention_heads,
+                    attention_head_dim,
+                    dropout=dropout,
+                    cross_attention_dim=cross_attention_dim,
+                    activation_fn=activation_fn,
+                    num_embeds_ada_norm=num_embeds_ada_norm,
+                    attention_bias=attention_bias,
+                    upcast_attention=upcast_attention,
                     norm_type=norm_type,
-                    norm_elementwise_affine=self.config.norm_elementwise_affine,
-                    norm_eps=self.config.norm_eps,
-                    attention_type=self.config.attention_type,
+                    norm_elementwise_affine=norm_elementwise_affine,
+                    norm_eps=norm_eps,
+                    attention_type=attention_type,
+                    dtype=dtype,
                 )
-                for _ in range(self.config.num_layers)
+                for _ in range(num_layers)
             ]
         )
 
         # 3. Output blocks.
-        self.norm_out = nn.LayerNorm(self.inner_dim, elementwise_affine=False, eps=1e-6)
-        self.scale_shift_table = nn.Parameter(
-            torch.randn(2, self.inner_dim) / self.inner_dim**0.5
+        self.norm_out = nn.LayerNorm(
+            self.inner_dim, elementwise_affine=False, eps=1e-6, dtype=dtype
         )
+        self.scale_shift_table = nn.Parameter([2, self.inner_dim], dtype=dtype)
         self.proj_out = nn.Linear(
-            self.inner_dim,
-            self.config.patch_size * self.config.patch_size * self.out_channels,
+            self.inner_dim, patch_size * patch_size * self.out_channels, dtype=dtype
         )
 
         self.adaln_single = AdaLayerNormSingle(
-            self.inner_dim, use_additional_conditions=self.use_additional_conditions
+            self.inner_dim,
+            use_additional_conditions=self.use_additional_conditions,
+            dtype=dtype,
         )
         self.caption_projection = None
-        if self.config.caption_channels is not None:
+        if caption_channels is not None:
             self.caption_projection = PixArtAlphaTextProjection(
-                in_features=self.config.caption_channels, hidden_size=self.inner_dim
+                in_features=caption_channels, hidden_size=self.inner_dim, dtype=dtype
             )
 
     def forward(
@@ -238,21 +240,23 @@ class PixArtTransformer2DModel(nn.Module):
             #   (1 = keep,      0 = discard)
             # convert mask into a bias that can be added to attention scores:
             #       (keep = +0,     discard = -10000.0)
-            attention_mask = (1 - attention_mask.to(hidden_states.dtype)) * -10000.0
-            attention_mask = attention_mask.unsqueeze(1)
+            attention_mask = (
+                1 - ops.cast()(attention_mask, dtype=hidden_states.dtype())
+            ) * -10000.0
+            attention_mask = ops.unsqueeze(1)(attention_mask)
 
         # convert encoder_attention_mask to a bias the same way we do for attention_mask
         if encoder_attention_mask is not None and encoder_attention_mask.ndim == 2:
             encoder_attention_mask = (
-                1 - encoder_attention_mask.to(hidden_states.dtype)
+                1 - ops.cast()(encoder_attention_mask, dtype=hidden_states.dtype())
             ) * -10000.0
-            encoder_attention_mask = encoder_attention_mask.unsqueeze(1)
+            encoder_attention_mask = ops.unsqueeze(1)(encoder_attention_mask)
 
         # 1. Input
-        batch_size = hidden_states.shape[0]
+        batch_size = ops.size()(hidden_states, dim=0)
         height, width = (
-            hidden_states.shape[-2] // self.config.patch_size,
-            hidden_states.shape[-1] // self.config.patch_size,
+            ops.size()(hidden_states, dim=1) / self.patch_size,
+            ops.size()(hidden_states, dim=2) / self.patch_size,
         )
         hidden_states = self.pos_embed(hidden_states)
 
@@ -260,13 +264,14 @@ class PixArtTransformer2DModel(nn.Module):
             timestep,
             added_cond_kwargs,
             batch_size=batch_size,
-            hidden_dtype=hidden_states.dtype,
+            hidden_dtype=hidden_states.dtype(),
         )
 
         if self.caption_projection is not None:
             encoder_hidden_states = self.caption_projection(encoder_hidden_states)
-            encoder_hidden_states = encoder_hidden_states.view(
-                batch_size, -1, hidden_states.shape[-1]
+            encoder_hidden_states = ops.reshape()(
+                encoder_hidden_states,
+                [batch_size, -1, ops.size()(hidden_states, dim=-1)],
             )
 
         # 2. Blocks
@@ -282,37 +287,36 @@ class PixArtTransformer2DModel(nn.Module):
             )
 
         # 3. Output
-        shift, scale = (
-            self.scale_shift_table[None]
-            + embedded_timestep[:, None].to(self.scale_shift_table.device)
-        ).chunk(2, dim=1)
+        shift, scale = ops.chunk()(
+            ops.unsqueeze(0)(self.scale_shift_table.tensor())
+            + ops.unsqueeze(1)(embedded_timestep),
+            chunks=2,
+            dim=1,
+        )
         hidden_states = self.norm_out(hidden_states)
         # Modulation
-        hidden_states = hidden_states * (1 + scale.to(hidden_states.device)) + shift.to(
-            hidden_states.device
-        )
+        hidden_states = hidden_states * (1 + scale) + shift
         hidden_states = self.proj_out(hidden_states)
-        hidden_states = hidden_states.squeeze(1)
+        hidden_states = ops.squeeze(1)(hidden_states)
 
         # unpatchify
-        hidden_states = hidden_states.reshape(
-            shape=(
+        hidden_states = ops.reshape()(
+            hidden_states,
+            [
                 -1,
                 height,
                 width,
-                self.config.patch_size,
-                self.config.patch_size,
+                self.patch_size,
+                self.patch_size,
                 self.out_channels,
-            )
+            ],
         )
-        hidden_states = torch.einsum("nhwpqc->nchpwq", hidden_states)
-        output = hidden_states.reshape(
-            shape=(
-                -1,
-                self.out_channels,
-                height * self.config.patch_size,
-                width * self.config.patch_size,
-            )
+        hidden_states = ops.permute()(
+            hidden_states, [0, 1, 3, 2, 4, 5]
+        )  # torch: nhwpqc->nchpwq
+        output = ops.reshape()(
+            hidden_states,
+            [-1, height * self.patch_size, width * self.patch_size, self.out_channels],
         )
 
         if not return_dict:
