@@ -38,3 +38,10 @@ hidden_states = self.nonlinearity(hidden_states) # elementwise_15_0
 x = self.downsample(x) # seems to override `hidden_states`
 hidden_states = self.downsample(hidden_states) # not established
 ```
+
+Pad mode reflect
+- `Downsample1d`/`Upsample1d` ->
+    - `UNetMidBlock1D`
+    - `AttnDownBlock1D`
+    - `DownBlock1D`
+    - `AttnUpBlock1D`
