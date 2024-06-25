@@ -41,6 +41,7 @@ def get_down_block(
     temporal_num_attention_heads: int = 8,
     temporal_max_seq_length: int = 32,
     transformer_layers_per_block: int = 1,
+    dtype: str = "float16",
 ) -> Union[
     "DownBlock3D",
     "CrossAttnDownBlock3D",
@@ -61,6 +62,7 @@ def get_down_block(
             resnet_groups=resnet_groups,
             downsample_padding=downsample_padding,
             resnet_time_scale_shift=resnet_time_scale_shift,
+            dtype=dtype,
         )
     elif down_block_type == "CrossAttnDownBlock3D":
         if cross_attention_dim is None:
@@ -84,6 +86,7 @@ def get_down_block(
             only_cross_attention=only_cross_attention,
             upcast_attention=upcast_attention,
             resnet_time_scale_shift=resnet_time_scale_shift,
+            dtype=dtype,
         )
     if down_block_type == "DownBlockMotion":
         return DownBlockMotion(
@@ -99,6 +102,7 @@ def get_down_block(
             resnet_time_scale_shift=resnet_time_scale_shift,
             temporal_num_attention_heads=temporal_num_attention_heads,
             temporal_max_seq_length=temporal_max_seq_length,
+            dtype=dtype,
         )
     elif down_block_type == "CrossAttnDownBlockMotion":
         if cross_attention_dim is None:
@@ -125,6 +129,7 @@ def get_down_block(
             resnet_time_scale_shift=resnet_time_scale_shift,
             temporal_num_attention_heads=temporal_num_attention_heads,
             temporal_max_seq_length=temporal_max_seq_length,
+            dtype=dtype,
         )
     elif down_block_type == "DownBlockSpatioTemporal":
         # added for SDV
@@ -134,6 +139,7 @@ def get_down_block(
             out_channels=out_channels,
             temb_channels=temb_channels,
             add_downsample=add_downsample,
+            dtype=dtype,
         )
     elif down_block_type == "CrossAttnDownBlockSpatioTemporal":
         # added for SDV
@@ -150,6 +156,7 @@ def get_down_block(
             add_downsample=add_downsample,
             cross_attention_dim=cross_attention_dim,
             num_attention_heads=num_attention_heads,
+            dtype=dtype,
         )
 
     raise ValueError(f"{down_block_type} does not exist.")
@@ -179,6 +186,7 @@ def get_up_block(
     temporal_max_seq_length: int = 32,
     transformer_layers_per_block: int = 1,
     dropout: float = 0.0,
+    dtype: str = "float16",
 ) -> Union[
     "UpBlock3D",
     "CrossAttnUpBlock3D",
@@ -200,6 +208,7 @@ def get_up_block(
             resnet_groups=resnet_groups,
             resnet_time_scale_shift=resnet_time_scale_shift,
             resolution_idx=resolution_idx,
+            dtype=dtype,
         )
     elif up_block_type == "CrossAttnUpBlock3D":
         if cross_attention_dim is None:
@@ -224,6 +233,7 @@ def get_up_block(
             upcast_attention=upcast_attention,
             resnet_time_scale_shift=resnet_time_scale_shift,
             resolution_idx=resolution_idx,
+            dtype=dtype,
         )
     if up_block_type == "UpBlockMotion":
         return UpBlockMotion(
@@ -240,6 +250,7 @@ def get_up_block(
             resolution_idx=resolution_idx,
             temporal_num_attention_heads=temporal_num_attention_heads,
             temporal_max_seq_length=temporal_max_seq_length,
+            dtype=dtype,
         )
     elif up_block_type == "CrossAttnUpBlockMotion":
         if cross_attention_dim is None:
@@ -267,6 +278,7 @@ def get_up_block(
             resolution_idx=resolution_idx,
             temporal_num_attention_heads=temporal_num_attention_heads,
             temporal_max_seq_length=temporal_max_seq_length,
+            dtype=dtype,
         )
     elif up_block_type == "UpBlockSpatioTemporal":
         # added for SDV
@@ -278,6 +290,7 @@ def get_up_block(
             temb_channels=temb_channels,
             resolution_idx=resolution_idx,
             add_upsample=add_upsample,
+            dtype=dtype,
         )
     elif up_block_type == "CrossAttnUpBlockSpatioTemporal":
         # added for SDV
@@ -296,6 +309,7 @@ def get_up_block(
             cross_attention_dim=cross_attention_dim,
             num_attention_heads=num_attention_heads,
             resolution_idx=resolution_idx,
+            dtype=dtype,
         )
 
     raise ValueError(f"{up_block_type} does not exist.")
@@ -319,6 +333,7 @@ class UNetMidBlock3DCrossAttn(nn.Module):
         dual_cross_attention: bool = False,
         use_linear_projection: bool = True,
         upcast_attention: bool = False,
+        dtype: str = "float16",
     ):
         super().__init__()
 
@@ -341,6 +356,7 @@ class UNetMidBlock3DCrossAttn(nn.Module):
                 non_linearity=resnet_act_fn,
                 output_scale_factor=output_scale_factor,
                 pre_norm=resnet_pre_norm,
+                dtype=dtype,
             )
         ]
         temp_convs = [
@@ -349,6 +365,7 @@ class UNetMidBlock3DCrossAttn(nn.Module):
                 in_channels,
                 dropout=0.1,
                 norm_num_groups=resnet_groups,
+                dtype=dtype,
             )
         ]
         attentions = []
@@ -365,6 +382,7 @@ class UNetMidBlock3DCrossAttn(nn.Module):
                     norm_num_groups=resnet_groups,
                     use_linear_projection=use_linear_projection,
                     upcast_attention=upcast_attention,
+                    dtype=dtype,
                 )
             )
             temp_attentions.append(
@@ -375,6 +393,7 @@ class UNetMidBlock3DCrossAttn(nn.Module):
                     num_layers=1,
                     cross_attention_dim=cross_attention_dim,
                     norm_num_groups=resnet_groups,
+                    dtype=dtype,
                 )
             )
             resnets.append(
@@ -389,6 +408,7 @@ class UNetMidBlock3DCrossAttn(nn.Module):
                     non_linearity=resnet_act_fn,
                     output_scale_factor=output_scale_factor,
                     pre_norm=resnet_pre_norm,
+                    dtype=dtype,
                 )
             )
             temp_convs.append(
@@ -397,6 +417,7 @@ class UNetMidBlock3DCrossAttn(nn.Module):
                     in_channels,
                     dropout=0.1,
                     norm_num_groups=resnet_groups,
+                    dtype=dtype,
                 )
             )
 
@@ -459,6 +480,7 @@ class CrossAttnDownBlock3D(nn.Module):
         use_linear_projection: bool = False,
         only_cross_attention: bool = False,
         upcast_attention: bool = False,
+        dtype: str = "float16",
     ):
         super().__init__()
         resnets = []
@@ -483,6 +505,7 @@ class CrossAttnDownBlock3D(nn.Module):
                     non_linearity=resnet_act_fn,
                     output_scale_factor=output_scale_factor,
                     pre_norm=resnet_pre_norm,
+                    dtype=dtype,
                 )
             )
             temp_convs.append(
@@ -491,6 +514,7 @@ class CrossAttnDownBlock3D(nn.Module):
                     out_channels,
                     dropout=0.1,
                     norm_num_groups=resnet_groups,
+                    dtype=dtype,
                 )
             )
             attentions.append(
@@ -504,6 +528,7 @@ class CrossAttnDownBlock3D(nn.Module):
                     use_linear_projection=use_linear_projection,
                     only_cross_attention=only_cross_attention,
                     upcast_attention=upcast_attention,
+                    dtype=dtype,
                 )
             )
             temp_attentions.append(
@@ -514,6 +539,7 @@ class CrossAttnDownBlock3D(nn.Module):
                     num_layers=1,
                     cross_attention_dim=cross_attention_dim,
                     norm_num_groups=resnet_groups,
+                    dtype=dtype,
                 )
             )
         self.resnets = nn.ModuleList(resnets)
@@ -530,6 +556,7 @@ class CrossAttnDownBlock3D(nn.Module):
                         out_channels=out_channels,
                         padding=downsample_padding,
                         name="op",
+                        dtype=dtype,
                     )
                 ]
             )
@@ -595,6 +622,7 @@ class DownBlock3D(nn.Module):
         output_scale_factor: float = 1.0,
         add_downsample: bool = True,
         downsample_padding: int = 1,
+        dtype: str = "float16",
     ):
         super().__init__()
         resnets = []
@@ -614,6 +642,7 @@ class DownBlock3D(nn.Module):
                     non_linearity=resnet_act_fn,
                     output_scale_factor=output_scale_factor,
                     pre_norm=resnet_pre_norm,
+                    dtype=dtype,
                 )
             )
             temp_convs.append(
@@ -622,6 +651,7 @@ class DownBlock3D(nn.Module):
                     out_channels,
                     dropout=0.1,
                     norm_num_groups=resnet_groups,
+                    dtype=dtype,
                 )
             )
 
@@ -637,6 +667,7 @@ class DownBlock3D(nn.Module):
                         out_channels=out_channels,
                         padding=downsample_padding,
                         name="op",
+                        dtype=dtype,
                     )
                 ]
             )
@@ -691,6 +722,7 @@ class CrossAttnUpBlock3D(nn.Module):
         only_cross_attention: bool = False,
         upcast_attention: bool = False,
         resolution_idx: Optional[int] = None,
+        dtype: str = "float16",
     ):
         super().__init__()
         resnets = []
@@ -717,6 +749,7 @@ class CrossAttnUpBlock3D(nn.Module):
                     non_linearity=resnet_act_fn,
                     output_scale_factor=output_scale_factor,
                     pre_norm=resnet_pre_norm,
+                    dtype=dtype,
                 )
             )
             temp_convs.append(
@@ -725,6 +758,7 @@ class CrossAttnUpBlock3D(nn.Module):
                     out_channels,
                     dropout=0.1,
                     norm_num_groups=resnet_groups,
+                    dtype=dtype,
                 )
             )
             attentions.append(
@@ -738,6 +772,7 @@ class CrossAttnUpBlock3D(nn.Module):
                     use_linear_projection=use_linear_projection,
                     only_cross_attention=only_cross_attention,
                     upcast_attention=upcast_attention,
+                    dtype=dtype,
                 )
             )
             temp_attentions.append(
@@ -748,6 +783,7 @@ class CrossAttnUpBlock3D(nn.Module):
                     num_layers=1,
                     cross_attention_dim=cross_attention_dim,
                     norm_num_groups=resnet_groups,
+                    dtype=dtype,
                 )
             )
         self.resnets = nn.ModuleList(resnets)
@@ -757,7 +793,14 @@ class CrossAttnUpBlock3D(nn.Module):
 
         if add_upsample:
             self.upsamplers = nn.ModuleList(
-                [Upsample2D(out_channels, use_conv=True, out_channels=out_channels)]
+                [
+                    Upsample2D(
+                        out_channels,
+                        use_conv=True,
+                        out_channels=out_channels,
+                        dtype=dtype,
+                    )
+                ]
             )
         else:
             self.upsamplers = None
@@ -803,7 +846,7 @@ class CrossAttnUpBlock3D(nn.Module):
             #         b2=self.b2,
             #     )
 
-            hidden_states = torch.cat([hidden_states, res_hidden_states], dim=1)
+            hidden_states = ops.concatenate()([hidden_states, res_hidden_states], dim=1)
 
             hidden_states = resnet(hidden_states, temb)
             hidden_states = temp_conv(hidden_states, num_frames=num_frames)
@@ -844,6 +887,7 @@ class UpBlock3D(nn.Module):
         output_scale_factor: float = 1.0,
         add_upsample: bool = True,
         resolution_idx: Optional[int] = None,
+        dtype: str = "float16",
     ):
         super().__init__()
         resnets = []
@@ -865,6 +909,7 @@ class UpBlock3D(nn.Module):
                     non_linearity=resnet_act_fn,
                     output_scale_factor=output_scale_factor,
                     pre_norm=resnet_pre_norm,
+                    dtype=dtype,
                 )
             )
             temp_convs.append(
@@ -873,6 +918,7 @@ class UpBlock3D(nn.Module):
                     out_channels,
                     dropout=0.1,
                     norm_num_groups=resnet_groups,
+                    dtype=dtype,
                 )
             )
 
@@ -881,7 +927,14 @@ class UpBlock3D(nn.Module):
 
         if add_upsample:
             self.upsamplers = nn.ModuleList(
-                [Upsample2D(out_channels, use_conv=True, out_channels=out_channels)]
+                [
+                    Upsample2D(
+                        out_channels,
+                        use_conv=True,
+                        out_channels=out_channels,
+                        dtype=dtype,
+                    )
+                ]
             )
         else:
             self.upsamplers = None
@@ -920,7 +973,7 @@ class UpBlock3D(nn.Module):
             #         b2=self.b2,
             #     )
 
-            hidden_states = torch.cat([hidden_states, res_hidden_states], dim=1)
+            hidden_states = ops.concatenate()([hidden_states, res_hidden_states], dim=1)
 
             hidden_states = resnet(hidden_states, temb)
             hidden_states = temp_conv(hidden_states, num_frames=num_frames)
@@ -951,6 +1004,7 @@ class DownBlockMotion(nn.Module):
         temporal_num_attention_heads: int = 1,
         temporal_cross_attention_dim: Optional[int] = None,
         temporal_max_seq_length: int = 32,
+        dtype: str = "float16",
     ):
         super().__init__()
         resnets = []
@@ -970,6 +1024,7 @@ class DownBlockMotion(nn.Module):
                     non_linearity=resnet_act_fn,
                     output_scale_factor=output_scale_factor,
                     pre_norm=resnet_pre_norm,
+                    dtype=dtype,
                 )
             )
             motion_modules.append(
@@ -983,6 +1038,7 @@ class DownBlockMotion(nn.Module):
                     positional_embeddings="sinusoidal",
                     num_positional_embeddings=temporal_max_seq_length,
                     attention_head_dim=out_channels // temporal_num_attention_heads,
+                    dtype=dtype,
                 )
             )
 
@@ -998,6 +1054,7 @@ class DownBlockMotion(nn.Module):
                         out_channels=out_channels,
                         padding=downsample_padding,
                         name="op",
+                        dtype=dtype,
                     )
                 ]
             )
@@ -1059,6 +1116,7 @@ class CrossAttnDownBlockMotion(nn.Module):
         temporal_cross_attention_dim: Optional[int] = None,
         temporal_num_attention_heads: int = 8,
         temporal_max_seq_length: int = 32,
+        dtype: str = "float16",
     ):
         super().__init__()
         resnets = []
@@ -1082,6 +1140,7 @@ class CrossAttnDownBlockMotion(nn.Module):
                     non_linearity=resnet_act_fn,
                     output_scale_factor=output_scale_factor,
                     pre_norm=resnet_pre_norm,
+                    dtype=dtype,
                 )
             )
 
@@ -1098,6 +1157,7 @@ class CrossAttnDownBlockMotion(nn.Module):
                         only_cross_attention=only_cross_attention,
                         upcast_attention=upcast_attention,
                         attention_type=attention_type,
+                        dtype=dtype,
                     )
                 )
             else:
@@ -1109,6 +1169,7 @@ class CrossAttnDownBlockMotion(nn.Module):
                         num_layers=1,
                         cross_attention_dim=cross_attention_dim,
                         norm_num_groups=resnet_groups,
+                        dtype=dtype,
                     )
                 )
 
@@ -1123,6 +1184,7 @@ class CrossAttnDownBlockMotion(nn.Module):
                     positional_embeddings="sinusoidal",
                     num_positional_embeddings=temporal_max_seq_length,
                     attention_head_dim=out_channels // temporal_num_attention_heads,
+                    dtype=dtype,
                 )
             )
 
@@ -1139,6 +1201,7 @@ class CrossAttnDownBlockMotion(nn.Module):
                         out_channels=out_channels,
                         padding=downsample_padding,
                         name="op",
+                        dtype=dtype,
                     )
                 ]
             )
@@ -1219,6 +1282,7 @@ class CrossAttnUpBlockMotion(nn.Module):
         temporal_cross_attention_dim: Optional[int] = None,
         temporal_num_attention_heads: int = 8,
         temporal_max_seq_length: int = 32,
+        dtype: str = "float16",
     ):
         super().__init__()
         resnets = []
@@ -1244,6 +1308,7 @@ class CrossAttnUpBlockMotion(nn.Module):
                     non_linearity=resnet_act_fn,
                     output_scale_factor=output_scale_factor,
                     pre_norm=resnet_pre_norm,
+                    dtype=dtype,
                 )
             )
 
@@ -1260,6 +1325,7 @@ class CrossAttnUpBlockMotion(nn.Module):
                         only_cross_attention=only_cross_attention,
                         upcast_attention=upcast_attention,
                         attention_type=attention_type,
+                        dtype=dtype,
                     )
                 )
             else:
@@ -1271,6 +1337,7 @@ class CrossAttnUpBlockMotion(nn.Module):
                         num_layers=1,
                         cross_attention_dim=cross_attention_dim,
                         norm_num_groups=resnet_groups,
+                        dtype=dtype,
                     )
                 )
             motion_modules.append(
@@ -1284,6 +1351,7 @@ class CrossAttnUpBlockMotion(nn.Module):
                     positional_embeddings="sinusoidal",
                     num_positional_embeddings=temporal_max_seq_length,
                     attention_head_dim=out_channels // temporal_num_attention_heads,
+                    dtype=dtype,
                 )
             )
 
@@ -1293,7 +1361,14 @@ class CrossAttnUpBlockMotion(nn.Module):
 
         if add_upsample:
             self.upsamplers = nn.ModuleList(
-                [Upsample2D(out_channels, use_conv=True, out_channels=out_channels)]
+                [
+                    Upsample2D(
+                        out_channels,
+                        use_conv=True,
+                        out_channels=out_channels,
+                        dtype=dtype,
+                    )
+                ]
             )
         else:
             self.upsamplers = None
@@ -1338,7 +1413,7 @@ class CrossAttnUpBlockMotion(nn.Module):
             #         b2=self.b2,
             #     )
 
-            hidden_states = torch.cat([hidden_states, res_hidden_states], dim=1)
+            hidden_states = ops.concatenate()([hidden_states, res_hidden_states], dim=1)
 
             hidden_states = resnet(hidden_states, temb)
             hidden_states = attn(
@@ -1382,6 +1457,7 @@ class UpBlockMotion(nn.Module):
         temporal_cross_attention_dim: Optional[int] = None,
         temporal_num_attention_heads: int = 8,
         temporal_max_seq_length: int = 32,
+        dtype: str = "float16",
     ):
         super().__init__()
         resnets = []
@@ -1403,6 +1479,7 @@ class UpBlockMotion(nn.Module):
                     non_linearity=resnet_act_fn,
                     output_scale_factor=output_scale_factor,
                     pre_norm=resnet_pre_norm,
+                    dtype=dtype,
                 )
             )
 
@@ -1417,6 +1494,7 @@ class UpBlockMotion(nn.Module):
                     positional_embeddings="sinusoidal",
                     num_positional_embeddings=temporal_max_seq_length,
                     attention_head_dim=out_channels // temporal_num_attention_heads,
+                    dtype=dtype,
                 )
             )
 
@@ -1425,7 +1503,14 @@ class UpBlockMotion(nn.Module):
 
         if add_upsample:
             self.upsamplers = nn.ModuleList(
-                [Upsample2D(out_channels, use_conv=True, out_channels=out_channels)]
+                [
+                    Upsample2D(
+                        out_channels,
+                        use_conv=True,
+                        out_channels=out_channels,
+                        dtype=dtype,
+                    )
+                ]
             )
         else:
             self.upsamplers = None
@@ -1469,7 +1554,7 @@ class UpBlockMotion(nn.Module):
             #         b2=self.b2,
             #     )
 
-            hidden_states = torch.cat([hidden_states, res_hidden_states], dim=1)
+            hidden_states = ops.concatenate()([hidden_states, res_hidden_states], dim=1)
 
             hidden_states = resnet(hidden_states, temb)
             hidden_states = motion_module(hidden_states, num_frames=num_frames)[0]
@@ -1504,6 +1589,7 @@ class UNetMidBlockCrossAttnMotion(nn.Module):
         temporal_num_attention_heads: int = 1,
         temporal_cross_attention_dim: Optional[int] = None,
         temporal_max_seq_length: int = 32,
+        dtype: str = "float16",
     ):
         super().__init__()
 
@@ -1526,6 +1612,7 @@ class UNetMidBlockCrossAttnMotion(nn.Module):
                 non_linearity=resnet_act_fn,
                 output_scale_factor=output_scale_factor,
                 pre_norm=resnet_pre_norm,
+                dtype=dtype,
             )
         ]
         attentions = []
@@ -1544,6 +1631,7 @@ class UNetMidBlockCrossAttnMotion(nn.Module):
                         use_linear_projection=use_linear_projection,
                         upcast_attention=upcast_attention,
                         attention_type=attention_type,
+                        dtype=dtype,
                     )
                 )
             else:
@@ -1555,6 +1643,7 @@ class UNetMidBlockCrossAttnMotion(nn.Module):
                         num_layers=1,
                         cross_attention_dim=cross_attention_dim,
                         norm_num_groups=resnet_groups,
+                        dtype=dtype,
                     )
                 )
             resnets.append(
@@ -1569,6 +1658,7 @@ class UNetMidBlockCrossAttnMotion(nn.Module):
                     non_linearity=resnet_act_fn,
                     output_scale_factor=output_scale_factor,
                     pre_norm=resnet_pre_norm,
+                    dtype=dtype,
                 )
             )
             motion_modules.append(
@@ -1582,6 +1672,7 @@ class UNetMidBlockCrossAttnMotion(nn.Module):
                     positional_embeddings="sinusoidal",
                     num_positional_embeddings=temporal_max_seq_length,
                     activation_fn="geglu",
+                    dtype=dtype,
                 )
             )
 
@@ -1630,6 +1721,7 @@ class MidBlockTemporalDecoder(nn.Module):
         attention_head_dim: int = 512,
         num_layers: int = 1,
         upcast_attention: bool = False,
+        dtype: str = "float16",
     ):
         super().__init__()
 
@@ -1647,6 +1739,7 @@ class MidBlockTemporalDecoder(nn.Module):
                     merge_factor=0.0,
                     merge_strategy="learned",
                     switch_spatial_to_temporal_mix=True,
+                    dtype=dtype,
                 )
             )
 
@@ -1660,6 +1753,7 @@ class MidBlockTemporalDecoder(nn.Module):
                 norm_num_groups=32,
                 bias=True,
                 residual_connection=True,
+                dtype=dtype,
             )
         )
 
@@ -1692,6 +1786,7 @@ class UpBlockTemporalDecoder(nn.Module):
         out_channels: int,
         num_layers: int = 1,
         add_upsample: bool = True,
+        dtype: str = "float16",
     ):
         super().__init__()
         resnets = []
@@ -1708,13 +1803,21 @@ class UpBlockTemporalDecoder(nn.Module):
                     merge_factor=0.0,
                     merge_strategy="learned",
                     switch_spatial_to_temporal_mix=True,
+                    dtype=dtype,
                 )
             )
         self.resnets = nn.ModuleList(resnets)
 
         if add_upsample:
             self.upsamplers = nn.ModuleList(
-                [Upsample2D(out_channels, use_conv=True, out_channels=out_channels)]
+                [
+                    Upsample2D(
+                        out_channels,
+                        use_conv=True,
+                        out_channels=out_channels,
+                        dtype=dtype,
+                    )
+                ]
             )
         else:
             self.upsamplers = None
@@ -1746,6 +1849,7 @@ class UNetMidBlockSpatioTemporal(nn.Module):
         transformer_layers_per_block: Union[int, Tuple[int]] = 1,
         num_attention_heads: int = 1,
         cross_attention_dim: int = 1280,
+        dtype: str = "float16",
     ):
         super().__init__()
 
@@ -1763,6 +1867,7 @@ class UNetMidBlockSpatioTemporal(nn.Module):
                 out_channels=in_channels,
                 temb_channels=temb_channels,
                 eps=1e-5,
+                dtype=dtype,
             )
         ]
         attentions = []
@@ -1775,6 +1880,7 @@ class UNetMidBlockSpatioTemporal(nn.Module):
                     in_channels=in_channels,
                     num_layers=transformer_layers_per_block[i],
                     cross_attention_dim=cross_attention_dim,
+                    dtype=dtype,
                 )
             )
 
@@ -1784,6 +1890,7 @@ class UNetMidBlockSpatioTemporal(nn.Module):
                     out_channels=in_channels,
                     temb_channels=temb_channels,
                     eps=1e-5,
+                    dtype=dtype,
                 )
             )
 
@@ -1829,6 +1936,7 @@ class DownBlockSpatioTemporal(nn.Module):
         temb_channels: int,
         num_layers: int = 1,
         add_downsample: bool = True,
+        dtype: str = "float16",
     ):
         super().__init__()
         resnets = []
@@ -1841,6 +1949,7 @@ class DownBlockSpatioTemporal(nn.Module):
                     out_channels=out_channels,
                     temb_channels=temb_channels,
                     eps=1e-5,
+                    dtype=dtype,
                 )
             )
 
@@ -1854,6 +1963,7 @@ class DownBlockSpatioTemporal(nn.Module):
                         use_conv=True,
                         out_channels=out_channels,
                         name="op",
+                        dtype=dtype,
                     )
                 ]
             )
@@ -1898,6 +2008,7 @@ class CrossAttnDownBlockSpatioTemporal(nn.Module):
         num_attention_heads: int = 1,
         cross_attention_dim: int = 1280,
         add_downsample: bool = True,
+        dtype: str = "float16",
     ):
         super().__init__()
         resnets = []
@@ -1916,6 +2027,7 @@ class CrossAttnDownBlockSpatioTemporal(nn.Module):
                     out_channels=out_channels,
                     temb_channels=temb_channels,
                     eps=1e-6,
+                    dtype=dtype,
                 )
             )
             attentions.append(
@@ -1925,6 +2037,7 @@ class CrossAttnDownBlockSpatioTemporal(nn.Module):
                     in_channels=out_channels,
                     num_layers=transformer_layers_per_block[i],
                     cross_attention_dim=cross_attention_dim,
+                    dtype=dtype,
                 )
             )
 
@@ -1940,6 +2053,7 @@ class CrossAttnDownBlockSpatioTemporal(nn.Module):
                         out_channels=out_channels,
                         padding=1,
                         name="op",
+                        dtype=dtype,
                     )
                 ]
             )
@@ -1993,6 +2107,7 @@ class UpBlockSpatioTemporal(nn.Module):
         num_layers: int = 1,
         resnet_eps: float = 1e-6,
         add_upsample: bool = True,
+        dtype: str = "float16",
     ):
         super().__init__()
         resnets = []
@@ -2007,6 +2122,7 @@ class UpBlockSpatioTemporal(nn.Module):
                     out_channels=out_channels,
                     temb_channels=temb_channels,
                     eps=resnet_eps,
+                    dtype=dtype,
                 )
             )
 
@@ -2014,7 +2130,14 @@ class UpBlockSpatioTemporal(nn.Module):
 
         if add_upsample:
             self.upsamplers = nn.ModuleList(
-                [Upsample2D(out_channels, use_conv=True, out_channels=out_channels)]
+                [
+                    Upsample2D(
+                        out_channels,
+                        use_conv=True,
+                        out_channels=out_channels,
+                        dtype=dtype,
+                    )
+                ]
             )
         else:
             self.upsamplers = None
@@ -2034,7 +2157,7 @@ class UpBlockSpatioTemporal(nn.Module):
             res_hidden_states = res_hidden_states_tuple[-1]
             res_hidden_states_tuple = res_hidden_states_tuple[:-1]
 
-            hidden_states = torch.cat([hidden_states, res_hidden_states], dim=1)
+            hidden_states = ops.concatenate()([hidden_states, res_hidden_states], dim=1)
 
             hidden_states = resnet(
                 hidden_states,
@@ -2063,6 +2186,7 @@ class CrossAttnUpBlockSpatioTemporal(nn.Module):
         num_attention_heads: int = 1,
         cross_attention_dim: int = 1280,
         add_upsample: bool = True,
+        dtype: str = "float16",
     ):
         super().__init__()
         resnets = []
@@ -2084,6 +2208,7 @@ class CrossAttnUpBlockSpatioTemporal(nn.Module):
                     out_channels=out_channels,
                     temb_channels=temb_channels,
                     eps=resnet_eps,
+                    dtype=dtype,
                 )
             )
             attentions.append(
@@ -2093,6 +2218,7 @@ class CrossAttnUpBlockSpatioTemporal(nn.Module):
                     in_channels=out_channels,
                     num_layers=transformer_layers_per_block[i],
                     cross_attention_dim=cross_attention_dim,
+                    dtype=dtype,
                 )
             )
 
@@ -2101,7 +2227,14 @@ class CrossAttnUpBlockSpatioTemporal(nn.Module):
 
         if add_upsample:
             self.upsamplers = nn.ModuleList(
-                [Upsample2D(out_channels, use_conv=True, out_channels=out_channels)]
+                [
+                    Upsample2D(
+                        out_channels,
+                        use_conv=True,
+                        out_channels=out_channels,
+                        dtype=dtype,
+                    )
+                ]
             )
         else:
             self.upsamplers = None
@@ -2122,7 +2255,7 @@ class CrossAttnUpBlockSpatioTemporal(nn.Module):
             res_hidden_states = res_hidden_states_tuple[-1]
             res_hidden_states_tuple = res_hidden_states_tuple[:-1]
 
-            hidden_states = torch.cat([hidden_states, res_hidden_states], dim=1)
+            hidden_states = ops.concatenate()([hidden_states, res_hidden_states], dim=1)
 
             hidden_states = resnet(
                 hidden_states,
