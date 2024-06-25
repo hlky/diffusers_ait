@@ -35,7 +35,7 @@ class UNet3DConditionOutput(BaseOutput):
     The output of [`UNet3DConditionModel`].
 
     Args:
-        sample (`Tensor` of shape `(batch_size, num_channels, num_frames, height, width)`):
+        sample (`Tensor` of shape `(batch_size, num_frames, height, width, num_channels)`):
             The hidden states output conditioned on `encoder_hidden_states` input. Output of last layer of model.
     """
 
@@ -105,10 +105,12 @@ class UNet3DConditionModel(nn.Module):
         attention_head_dim: Union[int, Tuple[int]] = 64,
         num_attention_heads: Optional[Union[int, Tuple[int]]] = None,
         time_cond_proj_dim: Optional[int] = None,
+        dtype: str = "float16",
     ):
         super().__init__()
 
         self.sample_size = sample_size
+        self.dtype = dtype
 
         if num_attention_heads is not None:
             raise NotImplementedError(
@@ -145,16 +147,17 @@ class UNet3DConditionModel(nn.Module):
         conv_in_kernel = 3
         conv_out_kernel = 3
         conv_in_padding = (conv_in_kernel - 1) // 2
-        self.conv_in = nn.Conv2d(
+        self.conv_in = nn.Conv2dBias(
             in_channels,
             block_out_channels[0],
             kernel_size=conv_in_kernel,
             padding=conv_in_padding,
+            dtype=dtype,
         )
 
         # time
         time_embed_dim = block_out_channels[0] * 4
-        self.time_proj = Timesteps(block_out_channels[0], True, 0)
+        self.time_proj = Timesteps(block_out_channels[0], True, 0, dtype=dtype)
         timestep_input_dim = block_out_channels[0]
 
         self.time_embedding = TimestepEmbedding(
@@ -162,6 +165,7 @@ class UNet3DConditionModel(nn.Module):
             time_embed_dim,
             act_fn=act_fn,
             cond_proj_dim=time_cond_proj_dim,
+            dtype=dtype,
         )
 
         self.transformer_in = TransformerTemporalModel(
@@ -170,6 +174,7 @@ class UNet3DConditionModel(nn.Module):
             in_channels=block_out_channels[0],
             num_layers=1,
             norm_num_groups=norm_num_groups,
+            dtype=dtype,
         )
 
         # class embedding
@@ -200,6 +205,7 @@ class UNet3DConditionModel(nn.Module):
                 num_attention_heads=num_attention_heads[i],
                 downsample_padding=downsample_padding,
                 dual_cross_attention=False,
+                dtype=dtype,
             )
             self.down_blocks.append(down_block)
 
@@ -214,6 +220,7 @@ class UNet3DConditionModel(nn.Module):
             num_attention_heads=num_attention_heads[-1],
             resnet_groups=norm_num_groups,
             dual_cross_attention=False,
+            dtype=dtype,
         )
 
         # count how many layers upsample the images
@@ -255,6 +262,7 @@ class UNet3DConditionModel(nn.Module):
                 num_attention_heads=reversed_num_attention_heads[i],
                 dual_cross_attention=False,
                 resolution_idx=i,
+                dtype=dtype,
             )
             self.up_blocks.append(up_block)
             prev_output_channel = output_channel
@@ -265,6 +273,7 @@ class UNet3DConditionModel(nn.Module):
                 num_channels=block_out_channels[0],
                 num_groups=norm_num_groups,
                 eps=norm_eps,
+                dtype=dtype,
             )
             self.conv_act = get_activation("silu")
         else:
@@ -272,82 +281,13 @@ class UNet3DConditionModel(nn.Module):
             self.conv_act = None
 
         conv_out_padding = (conv_out_kernel - 1) // 2
-        self.conv_out = nn.Conv2d(
+        self.conv_out = nn.Conv2dBias(
             block_out_channels[0],
             out_channels,
             kernel_size=conv_out_kernel,
             padding=conv_out_padding,
+            dtype=dtype,
         )
-
-    # Copied from diffusers.models.unets.unet_2d_condition.UNet2DConditionModel.set_attention_slice
-    def set_attention_slice(self, slice_size: Union[str, int, List[int]]) -> None:
-        r"""
-        Enable sliced attention computation.
-
-        When this option is enabled, the attention module splits the input tensor in slices to compute attention in
-        several steps. This is useful for saving some memory in exchange for a small decrease in speed.
-
-        Args:
-            slice_size (`str` or `int` or `list(int)`, *optional*, defaults to `"auto"`):
-                When `"auto"`, input to the attention heads is halved, so attention is computed in two steps. If
-                `"max"`, maximum amount of memory is saved by running only one slice at a time. If a number is
-                provided, uses as many slices as `attention_head_dim // slice_size`. In this case, `attention_head_dim`
-                must be a multiple of `slice_size`.
-        """
-        sliceable_head_dims = []
-
-        def fn_recursive_retrieve_sliceable_dims(module: nn.Module):
-            if hasattr(module, "set_attention_slice"):
-                sliceable_head_dims.append(module.sliceable_head_dim)
-
-            for child in module.children():
-                fn_recursive_retrieve_sliceable_dims(child)
-
-        # retrieve number of attention layers
-        for module in self.children():
-            fn_recursive_retrieve_sliceable_dims(module)
-
-        num_sliceable_layers = len(sliceable_head_dims)
-
-        if slice_size == "auto":
-            # half the attention head size is usually a good trade-off between
-            # speed and memory
-            slice_size = [dim // 2 for dim in sliceable_head_dims]
-        elif slice_size == "max":
-            # make smallest slice possible
-            slice_size = num_sliceable_layers * [1]
-
-        slice_size = (
-            num_sliceable_layers * [slice_size]
-            if not isinstance(slice_size, list)
-            else slice_size
-        )
-
-        if len(slice_size) != len(sliceable_head_dims):
-            raise ValueError(
-                f"You have provided {len(slice_size)}, but {self.config} has {len(sliceable_head_dims)} different"
-                f" attention layers. Make sure to match `len(slice_size)` to be {len(sliceable_head_dims)}."
-            )
-
-        for i in range(len(slice_size)):
-            size = slice_size[i]
-            dim = sliceable_head_dims[i]
-            if size is not None and size > dim:
-                raise ValueError(f"size {size} has to be smaller or equal to {dim}.")
-
-        # Recursively walk through all the children.
-        # Any children which exposes the set_attention_slice method
-        # gets the message
-        def fn_recursive_set_attention_slice(module: nn.Module, slice_size: List[int]):
-            if hasattr(module, "set_attention_slice"):
-                module.set_attention_slice(slice_size.pop())
-
-            for child in module.children():
-                fn_recursive_set_attention_slice(child, slice_size)
-
-        reversed_slice_size = list(reversed(slice_size))
-        for module in self.children():
-            fn_recursive_set_attention_slice(module, reversed_slice_size)
 
     # Copied from diffusers.models.unets.unet_2d_condition.UNet2DConditionModel.set_attn_processor
     def set_attn_processor(
@@ -386,85 +326,6 @@ class UNet3DConditionModel(nn.Module):
         for name, module in self.named_children():
             fn_recursive_attn_processor(name, module, processor)
 
-    def enable_forward_chunking(
-        self, chunk_size: Optional[int] = None, dim: int = 0
-    ) -> None:
-        """
-        Sets the attention processor to use [feed forward
-        chunking](https://huggingface.co/blog/reformer#2-chunked-feed-forward-layers).
-
-        Parameters:
-            chunk_size (`int`, *optional*):
-                The chunk size of the feed-forward layers. If not specified, will run feed-forward layer individually
-                over each tensor of dim=`dim`.
-            dim (`int`, *optional*, defaults to `0`):
-                The dimension over which the feed-forward computation should be chunked. Choose between dim=0 (batch)
-                or dim=1 (sequence length).
-        """
-        if dim not in [0, 1]:
-            raise ValueError(f"Make sure to set `dim` to either 0 or 1, not {dim}")
-
-        # By default chunk size is 1
-        chunk_size = chunk_size or 1
-
-        def fn_recursive_feed_forward(module: nn.Module, chunk_size: int, dim: int):
-            if hasattr(module, "set_chunk_feed_forward"):
-                module.set_chunk_feed_forward(chunk_size=chunk_size, dim=dim)
-
-            for child in module.children():
-                fn_recursive_feed_forward(child, chunk_size, dim)
-
-        for module in self.children():
-            fn_recursive_feed_forward(module, chunk_size, dim)
-
-    def disable_forward_chunking(self):
-        def fn_recursive_feed_forward(module: nn.Module, chunk_size: int, dim: int):
-            if hasattr(module, "set_chunk_feed_forward"):
-                module.set_chunk_feed_forward(chunk_size=chunk_size, dim=dim)
-
-            for child in module.children():
-                fn_recursive_feed_forward(child, chunk_size, dim)
-
-        for module in self.children():
-            fn_recursive_feed_forward(module, None, 0)
-
-    # Copied from diffusers.models.unets.unet_2d_condition.UNet2DConditionModel.enable_freeu
-    def enable_freeu(self, s1, s2, b1, b2):
-        r"""Enables the FreeU mechanism from https://arxiv.org/abs/2309.11497.
-
-        The suffixes after the scaling factors represent the stage blocks where they are being applied.
-
-        Please refer to the [official repository](https://github.com/ChenyangSi/FreeU) for combinations of values that
-        are known to work well for different pipelines such as Stable Diffusion v1, v2, and Stable Diffusion XL.
-
-        Args:
-            s1 (`float`):
-                Scaling factor for stage 1 to attenuate the contributions of the skip features. This is done to
-                mitigate the "oversmoothing effect" in the enhanced denoising process.
-            s2 (`float`):
-                Scaling factor for stage 2 to attenuate the contributions of the skip features. This is done to
-                mitigate the "oversmoothing effect" in the enhanced denoising process.
-            b1 (`float`): Scaling factor for stage 1 to amplify the contributions of backbone features.
-            b2 (`float`): Scaling factor for stage 2 to amplify the contributions of backbone features.
-        """
-        for i, upsample_block in enumerate(self.up_blocks):
-            setattr(upsample_block, "s1", s1)
-            setattr(upsample_block, "s2", s2)
-            setattr(upsample_block, "b1", b1)
-            setattr(upsample_block, "b2", b2)
-
-    # Copied from diffusers.models.unets.unet_2d_condition.UNet2DConditionModel.disable_freeu
-    def disable_freeu(self):
-        """Disables the FreeU mechanism."""
-        freeu_keys = {"s1", "s2", "b1", "b2"}
-        for i, upsample_block in enumerate(self.up_blocks):
-            for k in freeu_keys:
-                if (
-                    hasattr(upsample_block, k)
-                    or getattr(upsample_block, k, None) is not None
-                ):
-                    setattr(upsample_block, k, None)
-
     def forward(
         self,
         sample: Tensor,
@@ -483,7 +344,7 @@ class UNet3DConditionModel(nn.Module):
 
         Args:
             sample (`Tensor`):
-                The noisy input tensor with the following shape `(batch, num_channels, num_frames, height, width`.
+                The noisy input tensor with the following shape `(batch, num_frames, height, width, num_channels)`.
             timestep (`Tensor` or `float` or `int`): The number of timesteps to denoise an input.
             encoder_hidden_states (`Tensor`):
                 The encoder hidden states with shape `(batch, sequence_length, feature_dim)`.
@@ -519,35 +380,43 @@ class UNet3DConditionModel(nn.Module):
         # The overall upsampling factor is equal to 2 ** (# num of upsampling layears).
         # However, the upsampling interpolation output size can be forced to fit any upsampling size
         # on the fly if necessary.
+        batch, frames, height, width, channel = ops.size()(sample)
         default_overall_up_factor = 2**self.num_upsamplers
 
         # upsample size should be forwarded when sample is not a multiple of `default_overall_up_factor`
         forward_upsample_size = False
         upsample_size = None
 
-        if any(s % default_overall_up_factor != 0 for s in sample.shape[-2:]):
-            forward_upsample_size = True
+        for dim in ops.size()(sample)[1:2]:
+            if dim % default_overall_up_factor != 0:
+                # Forward upsample size to force interpolation output size.
+                forward_upsample_size = True
+                break
 
         # prepare attention_mask
         if attention_mask is not None:
-            attention_mask = (1 - attention_mask.to(sample.dtype)) * -10000.0
-            attention_mask = attention_mask.unsqueeze(1)
+            # assume that mask is expressed as:
+            #   (1 = keep,      0 = discard)
+            # convert mask into a bias that can be added to attention scores:
+            #       (keep = +0,     discard = -10000.0)
+            attention_mask = (
+                1 - ops.cast()(attention_mask, dtype=sample.dtype())
+            ) * -10000.0
+            attention_mask = ops.unsqueeze(1)(attention_mask)
 
         # 1. time
         timesteps = timestep
-        if len(timesteps.shape) == 0:
-            timesteps = timesteps[None].to(sample.device)
 
         # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
-        num_frames = sample.shape[2]
-        timesteps = timesteps.expand(sample.shape[0])
+        num_frames = ops.size()(sample, dim=1)
+        timesteps = ops.expand()(timesteps, [ops.size()(sample, dim=0)])
 
         t_emb = self.time_proj(timesteps)
 
         # timesteps does not contain any weights and will always return f32 tensors
         # but time_embedding might actually be running in fp16. so we need to cast here.
         # there might be better ways to encapsulate this.
-        t_emb = t_emb.to(dtype=self.dtype)
+        t_emb = ops.cast()(t_emb, dtype=self.dtype)
 
         emb = self.time_embedding(t_emb, timestep_cond)
         emb = emb.repeat_interleave(repeats=num_frames, dim=0)
@@ -556,9 +425,7 @@ class UNet3DConditionModel(nn.Module):
         )
 
         # 2. pre-process
-        sample = sample.permute(0, 2, 1, 3, 4).reshape(
-            (sample.shape[0] * num_frames, -1) + sample.shape[3:]
-        )
+        sample = ops.reshape()(sample, [batch * num_frames, height, width, channel])
         sample = self.conv_in(sample)
 
         sample = self.transformer_in(
@@ -629,7 +496,7 @@ class UNet3DConditionModel(nn.Module):
             # if we have not reached the final block and need to forward the
             # upsample size, we do it here
             if not is_final_block and forward_upsample_size:
-                upsample_size = down_block_res_samples[-1].shape[2:]
+                upsample_size = ops.size()(down_block_res_samples[-1])[1:2]
 
             if (
                 hasattr(upsample_block, "has_cross_attention")
@@ -661,11 +528,9 @@ class UNet3DConditionModel(nn.Module):
 
         sample = self.conv_out(sample)
 
-        # reshape to (batch, channel, framerate, width, height)
-        sample = (
-            sample[None, :]
-            .reshape((-1, num_frames) + sample.shape[1:])
-            .permute(0, 2, 1, 3, 4)
+        # reshape to (batch, framerate, width, height, channel)
+        sample = ops.reshape()(
+            ops.unsqueeze(0)(sample), [-1, num_frames] + ops.size()(sample)[1:]
         )
 
         if not return_dict:
