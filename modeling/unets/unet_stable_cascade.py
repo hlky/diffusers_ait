@@ -8,6 +8,8 @@ from aitemplate.frontend import nn, Tensor
 
 from ...utils import BaseOutput
 from ..attention_processor import Attention
+from ..embeddings import GELU, SiLU
+from ..normalization import GlobalResponseNorm
 
 
 # Copied from diffusers.pipelines.wuerstchen.modeling_wuerstchen_common.WuerstchenLayerNorm with WuerstchenLayerNorm -> SDCascadeLayerNorm
@@ -15,99 +17,115 @@ class SDCascadeLayerNorm(nn.LayerNorm):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    def forward(self, x):
-        x = x.permute(0, 2, 3, 1)
+    def forward(self, x: Tensor):
+        # TODO: check
+        x = ops.permute()(x, [0, 3, 1, 2])
         x = super().forward(x)
-        return x.permute(0, 3, 1, 2)
+        return ops.permute()(x, [0, 2, 3, 1])
 
 
 class SDCascadeTimestepBlock(nn.Module):
-    def __init__(self, c, c_timestep, conds=[]):
+    def __init__(self, c, c_timestep, conds=[], dtype: str = "float16"):
         super().__init__()
 
-        self.mapper = nn.Linear(c_timestep, c * 2)
+        self.mapper = nn.Linear(c_timestep, c * 2, dtype=dtype)
         self.conds = conds
         for cname in conds:
-            setattr(self, f"mapper_{cname}", nn.Linear(c_timestep, c * 2))
+            setattr(self, f"mapper_{cname}", nn.Linear(c_timestep, c * 2, dtype=dtype))
 
     def forward(self, x, t):
-        t = t.chunk(len(self.conds) + 1, dim=1)
-        a, b = self.mapper(t[0])[:, :, None, None].chunk(2, dim=1)
+        t = ops.chunk()(t, len(self.conds) + 1, dim=1)
+        a, b = ops.chunk()(
+            ops.unsqueeze(-1)(ops.unsqueeze(-1)(self.mapper(t[0]))), 2, dim=1
+        )
         for i, c in enumerate(self.conds):
-            ac, bc = getattr(self, f"mapper_{c}")(t[i + 1])[:, :, None, None].chunk(
-                2, dim=1
+            ac, bc = ops.chunk()(
+                ops.unsqueeze(-1)(
+                    ops.unsqueeze(-1)(getattr(self, f"mapper_{c}")(t[i + 1]))
+                ),
+                2,
+                dim=1,
             )
             a, b = a + ac, b + bc
         return x * (1 + a) + b
 
 
 class SDCascadeResBlock(nn.Module):
-    def __init__(self, c, c_skip=0, kernel_size=3, dropout=0.0):
+    def __init__(self, c, c_skip=0, kernel_size=3, dropout=0.0, dtype: str = "float16"):
         super().__init__()
-        self.depthwise = nn.Conv2d(
-            c, c, kernel_size=kernel_size, padding=kernel_size // 2, groups=c
+        self.depthwise = nn.Conv2dBias(
+            c,
+            c,
+            kernel_size=kernel_size,
+            padding=kernel_size // 2,
+            groups=c,
+            dtype=dtype,
         )
-        self.norm = SDCascadeLayerNorm(c, elementwise_affine=False, eps=1e-6)
+        self.norm = SDCascadeLayerNorm(
+            c, elementwise_affine=False, eps=1e-6, dtype=dtype
+        )
         self.channelwise = nn.Sequential(
-            nn.Linear(c + c_skip, c * 4),
-            nn.GELU(),
-            GlobalResponseNorm(c * 4),
+            nn.Linear(c + c_skip, c * 4, dtype=dtype),
+            GELU(),
+            GlobalResponseNorm(c * 4, dtype=dtype),
             nn.Dropout(dropout),
-            nn.Linear(c * 4, c),
+            nn.Linear(c * 4, c, dtype=dtype),
         )
 
     def forward(self, x, x_skip=None):
         x_res = x
         x = self.norm(self.depthwise(x))
         if x_skip is not None:
-            x = torch.cat([x, x_skip], dim=1)
-        x = self.channelwise(x.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
+            x = ops.concatenate()([x, x_skip], dim=1)
+        x = self.channelwise(x)
         return x + x_res
 
 
-# from https://github.com/facebookresearch/ConvNeXt-V2/blob/3608f67cc1dae164790c5d0aead7bf2d73d9719b/models/utils.py#L105
-class GlobalResponseNorm(nn.Module):
-    def __init__(self, dim):
-        super().__init__()
-        self.gamma = nn.Parameter(torch.zeros(1, 1, 1, dim))
-        self.beta = nn.Parameter(torch.zeros(1, 1, 1, dim))
-
-    def forward(self, x):
-        agg_norm = torch.norm(x, p=2, dim=(1, 2), keepdim=True)
-        stand_div_norm = agg_norm / (agg_norm.mean(dim=-1, keepdim=True) + 1e-6)
-        return self.gamma * (x * stand_div_norm) + self.beta + x
-
-
 class SDCascadeAttnBlock(nn.Module):
-    def __init__(self, c, c_cond, nhead, self_attn=True, dropout=0.0):
+    def __init__(
+        self, c, c_cond, nhead, self_attn=True, dropout=0.0, dtype: str = "float16"
+    ):
         super().__init__()
 
         self.self_attn = self_attn
-        self.norm = SDCascadeLayerNorm(c, elementwise_affine=False, eps=1e-6)
-        self.attention = Attention(
-            query_dim=c, heads=nhead, dim_head=c // nhead, dropout=dropout, bias=True
+        self.norm = SDCascadeLayerNorm(
+            c, elementwise_affine=False, eps=1e-6, dtype=dtype
         )
-        self.kv_mapper = nn.Sequential(nn.SiLU(), nn.Linear(c_cond, c))
+        self.attention = Attention(
+            query_dim=c,
+            heads=nhead,
+            dim_head=c // nhead,
+            dropout=dropout,
+            bias=True,
+            dtype=dtype,
+        )
+        self.kv_mapper = nn.Sequential(SiLU(), nn.Linear(c_cond, c))
 
-    def forward(self, x, kv):
+    def forward(self, x: Tensor, kv: Tensor):
         kv = self.kv_mapper(kv)
         norm_x = self.norm(x)
         if self.self_attn:
-            batch_size, channel, _, _ = x.shape
-            kv = torch.cat(
-                [norm_x.view(batch_size, channel, -1).transpose(1, 2), kv], dim=1
+            batch_size, _, _, channel = ops.size()(x)
+            kv = ops.concatenate()(
+                [
+                    ops.permute021()(ops.reshape()(norm_x, [batch_size, channel, -1])),
+                    kv,
+                ],
+                dim=1,
             )
         x = x + self.attention(norm_x, encoder_hidden_states=kv)
         return x
 
 
 class UpDownBlock2d(nn.Module):
-    def __init__(self, in_channels, out_channels, mode, enabled=True):
+    def __init__(
+        self, in_channels, out_channels, mode, enabled=True, dtype: str = "float16"
+    ):
         super().__init__()
         if mode not in ["up", "down"]:
             raise ValueError(f"{mode} not supported")
         interpolation = (
-            nn.Upsample(
+            ops.upsampling2d(
                 scale_factor=2 if mode == "up" else 0.5,
                 mode="bilinear",
                 align_corners=True,
@@ -115,7 +133,7 @@ class UpDownBlock2d(nn.Module):
             if enabled
             else nn.Identity()
         )
-        mapping = nn.Conv2d(in_channels, out_channels, kernel_size=1)
+        mapping = nn.Conv2dBias(in_channels, out_channels, kernel_size=1, dtype=dtype)
         self.blocks = nn.ModuleList(
             [interpolation, mapping] if mode == "up" else [mapping, interpolation]
         )
@@ -165,6 +183,7 @@ class StableCascadeUNet(nn.Module):
         self_attn: Union[bool, Tuple[bool]] = True,
         timestep_conditioning_type: Tuple[str] = ("sca", "crp"),
         switch_level: Optional[Tuple[bool]] = None,
+        dtype: str = "float16",
     ):
         """
 
@@ -221,6 +240,10 @@ class StableCascadeUNet(nn.Module):
         """
 
         super().__init__()
+        self.timestep_ratio_embedding_dim = timestep_ratio_embedding_dim
+        self.dtype = dtype
+        self.clip_seq = clip_seq
+        self.timestep_conditioning_type = timestep_conditioning_type
 
         if len(block_out_channels) != len(down_num_layers_per_block):
             raise ValueError(
@@ -255,58 +278,93 @@ class StableCascadeUNet(nn.Module):
         # CONDITIONING
         if effnet_in_channels is not None:
             self.effnet_mapper = nn.Sequential(
-                nn.Conv2d(effnet_in_channels, block_out_channels[0] * 4, kernel_size=1),
-                nn.GELU(),
-                nn.Conv2d(
-                    block_out_channels[0] * 4, block_out_channels[0], kernel_size=1
+                nn.Conv2dBias(
+                    effnet_in_channels,
+                    block_out_channels[0] * 4,
+                    kernel_size=1,
+                    dtype=dtype,
+                ),
+                GELU(),
+                nn.Conv2dBias(
+                    block_out_channels[0] * 4,
+                    block_out_channels[0],
+                    kernel_size=1,
+                    dtype=dtype,
                 ),
                 SDCascadeLayerNorm(
-                    block_out_channels[0], elementwise_affine=False, eps=1e-6
+                    block_out_channels[0],
+                    elementwise_affine=False,
+                    eps=1e-6,
+                    dtype=dtype,
                 ),
             )
         if pixel_mapper_in_channels is not None:
             self.pixels_mapper = nn.Sequential(
-                nn.Conv2d(
-                    pixel_mapper_in_channels, block_out_channels[0] * 4, kernel_size=1
+                nn.Conv2dBias(
+                    pixel_mapper_in_channels,
+                    block_out_channels[0] * 4,
+                    kernel_size=1,
+                    dtype=dtype,
                 ),
-                nn.GELU(),
-                nn.Conv2d(
-                    block_out_channels[0] * 4, block_out_channels[0], kernel_size=1
+                GELU(),
+                nn.Conv2dBias(
+                    block_out_channels[0] * 4,
+                    block_out_channels[0],
+                    kernel_size=1,
+                    dtype=dtype,
                 ),
                 SDCascadeLayerNorm(
-                    block_out_channels[0], elementwise_affine=False, eps=1e-6
+                    block_out_channels[0],
+                    elementwise_affine=False,
+                    eps=1e-6,
+                    dtype=dtype,
                 ),
             )
 
         self.clip_txt_pooled_mapper = nn.Linear(
-            clip_text_pooled_in_channels, conditioning_dim * clip_seq
+            clip_text_pooled_in_channels, conditioning_dim * clip_seq, dtype=dtype
         )
         if clip_text_in_channels is not None:
-            self.clip_txt_mapper = nn.Linear(clip_text_in_channels, conditioning_dim)
+            self.clip_txt_mapper = nn.Linear(
+                clip_text_in_channels, conditioning_dim, dtype=dtype
+            )
         if clip_image_in_channels is not None:
             self.clip_img_mapper = nn.Linear(
-                clip_image_in_channels, conditioning_dim * clip_seq
+                clip_image_in_channels, conditioning_dim * clip_seq, dtype=dtype
             )
         self.clip_norm = nn.LayerNorm(
-            conditioning_dim, elementwise_affine=False, eps=1e-6
+            conditioning_dim, elementwise_affine=False, eps=1e-6, dtype=dtype
         )
 
         self.embedding = nn.Sequential(
             nn.PixelUnshuffle(patch_size),
-            nn.Conv2d(
-                in_channels * (patch_size**2), block_out_channels[0], kernel_size=1
+            nn.Conv2dBias(
+                in_channels * (patch_size**2),
+                block_out_channels[0],
+                kernel_size=1,
+                dtype=dtype,
             ),
             SDCascadeLayerNorm(
-                block_out_channels[0], elementwise_affine=False, eps=1e-6
+                block_out_channels[0], elementwise_affine=False, eps=1e-6, dtype=dtype
             ),
         )
 
         def get_block(
-            block_type, in_channels, nhead, c_skip=0, dropout=0, self_attn=True
+            block_type,
+            in_channels,
+            nhead,
+            c_skip=0,
+            dropout=0,
+            self_attn=True,
+            dtype: str = "float16",
         ):
             if block_type == "SDCascadeResBlock":
                 return SDCascadeResBlock(
-                    in_channels, c_skip, kernel_size=kernel_size, dropout=dropout
+                    in_channels,
+                    c_skip,
+                    kernel_size=kernel_size,
+                    dropout=dropout,
+                    dtype=dtype,
                 )
             elif block_type == "SDCascadeAttnBlock":
                 return SDCascadeAttnBlock(
@@ -315,12 +373,14 @@ class StableCascadeUNet(nn.Module):
                     nhead,
                     self_attn=self_attn,
                     dropout=dropout,
+                    dtype=dtype,
                 )
             elif block_type == "SDCascadeTimestepBlock":
                 return SDCascadeTimestepBlock(
                     in_channels,
                     timestep_ratio_embedding_dim,
                     conds=timestep_conditioning_type,
+                    dtype=dtype,
                 )
             else:
                 raise ValueError(f"Block type {block_type} not supported")
@@ -338,6 +398,7 @@ class StableCascadeUNet(nn.Module):
                             block_out_channels[i - 1],
                             elementwise_affine=False,
                             eps=1e-6,
+                            dtype=dtype,
                         ),
                         (
                             UpDownBlock2d(
@@ -345,13 +406,15 @@ class StableCascadeUNet(nn.Module):
                                 block_out_channels[i],
                                 mode="down",
                                 enabled=switch_level[i - 1],
+                                dtype=dtype,
                             )
                             if switch_level is not None
-                            else nn.Conv2d(
+                            else nn.Conv2dBias(
                                 block_out_channels[i - 1],
                                 block_out_channels[i],
                                 kernel_size=2,
                                 stride=2,
+                                dtype=dtype,
                             )
                         ),
                     )
@@ -368,6 +431,7 @@ class StableCascadeUNet(nn.Module):
                         num_attention_heads[i],
                         dropout=dropout[i],
                         self_attn=self_attn[i],
+                        dtype=dtype,
                     )
                     down_block.append(block)
             self.down_blocks.append(down_block)
@@ -376,8 +440,11 @@ class StableCascadeUNet(nn.Module):
                 block_repeat_mappers = nn.ModuleList()
                 for _ in range(down_blocks_repeat_mappers[i] - 1):
                     block_repeat_mappers.append(
-                        nn.Conv2d(
-                            block_out_channels[i], block_out_channels[i], kernel_size=1
+                        nn.Conv2dBias(
+                            block_out_channels[i],
+                            block_out_channels[i],
+                            kernel_size=1,
+                            dtype=dtype,
                         )
                     )
                 self.down_repeat_mappers.append(block_repeat_mappers)
@@ -391,7 +458,10 @@ class StableCascadeUNet(nn.Module):
                 self.up_upscalers.append(
                     nn.Sequential(
                         SDCascadeLayerNorm(
-                            block_out_channels[i], elementwise_affine=False, eps=1e-6
+                            block_out_channels[i],
+                            elementwise_affine=False,
+                            eps=1e-6,
+                            dtype=dtype,
                         ),
                         (
                             UpDownBlock2d(
@@ -399,13 +469,15 @@ class StableCascadeUNet(nn.Module):
                                 block_out_channels[i - 1],
                                 mode="up",
                                 enabled=switch_level[i - 1],
+                                dtype=dtype,
                             )
                             if switch_level is not None
-                            else nn.ConvTranspose2d(
+                            else nn.ConvTranspose2dBias(
                                 block_out_channels[i],
                                 block_out_channels[i - 1],
                                 kernel_size=2,
                                 stride=2,
+                                dtype=dtype,
                             )
                         ),
                     )
@@ -428,6 +500,7 @@ class StableCascadeUNet(nn.Module):
                         c_skip=c_skip,
                         dropout=dropout[i],
                         self_attn=self_attn[i],
+                        dtype=dtype,
                     )
                     up_block.append(block)
             self.up_blocks.append(up_block)
@@ -436,8 +509,11 @@ class StableCascadeUNet(nn.Module):
                 block_repeat_mappers = nn.ModuleList()
                 for _ in range(up_blocks_repeat_mappers[::-1][i] - 1):
                     block_repeat_mappers.append(
-                        nn.Conv2d(
-                            block_out_channels[i], block_out_channels[i], kernel_size=1
+                        nn.Conv2dBias(
+                            block_out_channels[i],
+                            block_out_channels[i],
+                            kernel_size=1,
+                            dtype=dtype,
                         )
                     )
                 self.up_repeat_mappers.append(block_repeat_mappers)
@@ -445,44 +521,65 @@ class StableCascadeUNet(nn.Module):
         # OUTPUT
         self.clf = nn.Sequential(
             SDCascadeLayerNorm(
-                block_out_channels[0], elementwise_affine=False, eps=1e-6
+                block_out_channels[0], elementwise_affine=False, eps=1e-6, dtype=dtype
             ),
-            nn.Conv2d(
-                block_out_channels[0], out_channels * (patch_size**2), kernel_size=1
+            nn.Conv2dBias(
+                block_out_channels[0],
+                out_channels * (patch_size**2),
+                kernel_size=1,
+                dtype=dtype,
             ),
             nn.PixelShuffle(patch_size),
         )
 
         self.gradient_checkpointing = False
 
-    def get_timestep_ratio_embedding(self, timestep_ratio, max_positions=10000):
+    def get_timestep_ratio_embedding(self, timestep_ratio: Tensor, max_positions=10000):
         r = timestep_ratio * max_positions
-        half_dim = self.config.timestep_ratio_embedding_dim // 2
+        half_dim = self.timestep_ratio_embedding_dim // 2
 
         emb = math.log(max_positions) / (half_dim - 1)
-        emb = torch.arange(half_dim, device=r.device).float().mul(-emb).exp()
-        emb = r[:, None] * emb[None, :]
-        emb = torch.cat([emb.sin(), emb.cos()], dim=1)
+        emb = Tensor([half_dim], name="timestep_ratio")
+        emb = ops.exp(ops.cast()(emb, "float32") * -emb)
+        emb = ops.unsqueeze(1)(r) * ops.unsqueeze(0)(emb)
+        emb = ops.concatenate()([ops.sin(emb), ops.cos(emb)], dim=1)
 
-        if self.config.timestep_ratio_embedding_dim % 2 == 1:  # zero pad
-            emb = nn.functional.pad(emb, (0, 1), mode="constant")
+        if self.timestep_ratio_embedding_dim % 2 == 1:  # zero pad
+            padding = ops.full()([0, 1], 0.0, dtype=self.dtype)
+            padding._attrs["shape"][0] = emb._attrs["shape"][0]
+            emb = ops.concatenate()([emb, padding], dim=-1)
 
-        return emb.to(dtype=r.dtype)
+        return ops.cast()(emb, dtype=r.dtype())
 
-    def get_clip_embeddings(self, clip_txt_pooled, clip_txt=None, clip_img=None):
-        if len(clip_txt_pooled.shape) == 2:
-            clip_txt_pool = clip_txt_pooled.unsqueeze(1)
-        clip_txt_pool = self.clip_txt_pooled_mapper(clip_txt_pooled).view(
-            clip_txt_pooled.size(0), clip_txt_pooled.size(1) * self.config.clip_seq, -1
+    def get_clip_embeddings(
+        self,
+        clip_txt_pooled: Tensor,
+        clip_txt: Optional[Tensor] = None,
+        clip_img: Optional[Tensor] = None,
+    ):
+        if len(ops.size()(clip_txt_pooled)) == 2:
+            clip_txt_pool = ops.unsqueeze(1)(clip_txt_pooled)
+        clip_txt_pool = ops.reshape()(
+            self.clip_txt_pooled_mapper(clip_txt_pooled),
+            [
+                ops.size()(clip_txt_pooled, dim=0),
+                ops.size()(clip_txt_pooled, dim=1) * self.clip_seq,
+                -1,
+            ],
         )
         if clip_txt is not None and clip_img is not None:
             clip_txt = self.clip_txt_mapper(clip_txt)
-            if len(clip_img.shape) == 2:
-                clip_img = clip_img.unsqueeze(1)
-            clip_img = self.clip_img_mapper(clip_img).view(
-                clip_img.size(0), clip_img.size(1) * self.config.clip_seq, -1
+            if len(ops.size()(clip_img)) == 2:
+                clip_img = ops.unsqueeze(1)(clip_img)
+            clip_img = ops.reshape()(
+                self.clip_img_mapper(clip_img),
+                [
+                    ops.size()(clip_img, dim=0),
+                    ops.size()(clip_img, dim=1) * self.clip_seq,
+                    -1,
+                ],
             )
-            clip = torch.cat([clip_txt, clip_txt_pool, clip_img], dim=1)
+            clip = ops.concatenate()([clip_txt, clip_txt_pool, clip_img], dim=1)
         else:
             clip = clip_txt_pool
         return self.clip_norm(clip)
@@ -520,16 +617,19 @@ class StableCascadeUNet(nn.Module):
                     if isinstance(block, SDCascadeResBlock):
                         skip = level_outputs[i] if k == 0 and i > 0 else None
                         if skip is not None and (
-                            x.size(-1) != skip.size(-1) or x.size(-2) != skip.size(-2)
+                            ops.size()(x, dim=1) != ops.size()(skip, dim=1)
+                            or ops.size()(x, dim=2) != ops.size()(skip, dim=2)
                         ):
-                            orig_type = x.dtype
-                            x = torch.nn.functional.interpolate(
-                                x.float(),
-                                skip.shape[-2:],
-                                mode="bilinear",
-                                align_corners=True,
-                            )
-                            x = x.to(orig_type)
+                            orig_type = x.dtype()
+                            out = ops.size()(x)
+                            out[1] = ops.size()(skip, dim=1)
+                            out[2] = ops.size()(skip, dim=2)
+                            out = [x._attrs["int_var"] for x in out]
+                            out = Tensor(out)
+                            x = ops.upsampling2d(
+                                scale_factor=2.0, mode="bilinear", align_corners=True
+                            )(ops.cast()(x, "float32"), out=out)
+                            x = ops.cast()(x, orig_type)
                         x = block(x, skip)
                     elif isinstance(block, SDCascadeAttnBlock):
                         x = block(x, clip)
@@ -544,31 +644,39 @@ class StableCascadeUNet(nn.Module):
 
     def forward(
         self,
-        sample,
-        timestep_ratio,
-        clip_text_pooled,
-        clip_text=None,
-        clip_img=None,
+        sample: Tensor,
+        timestep_ratio: Tensor,
+        clip_text_pooled: Tensor,
+        clip_text: Optional[Tensor] = None,
+        clip_img: Optional[Tensor] = None,
         effnet=None,
-        pixels=None,
+        pixels: Optional[Tensor] = None,
         sca=None,
         crp=None,
         return_dict=True,
     ):
         if pixels is None:
-            pixels = sample.new_zeros(sample.size(0), 3, 8, 8)
+            pixels = ops.full()(
+                [ops.size()(sample, dim=0), 3, 8, 8],
+                fill_value=0.0,
+                dtype=sample.dtype(),
+            )
 
         # Process the conditioning embeddings
         timestep_ratio_embed = self.get_timestep_ratio_embedding(timestep_ratio)
-        for c in self.config.timestep_conditioning_type:
+        for c in self.timestep_conditioning_type:
             if c == "sca":
                 cond = sca
             elif c == "crp":
                 cond = crp
             else:
                 cond = None
-            t_cond = cond or torch.zeros_like(timestep_ratio)
-            timestep_ratio_embed = torch.cat(
+            t_cond = cond or ops.full()(
+                ops.size()(timestep_ratio),
+                fill_value=0.0,
+                dtype=timestep_ratio_embed.dtype(),
+            )
+            timestep_ratio_embed = ops.concatenate()(
                 [timestep_ratio_embed, self.get_timestep_ratio_embedding(t_cond)], dim=1
             )
         clip = self.get_clip_embeddings(
@@ -578,18 +686,25 @@ class StableCascadeUNet(nn.Module):
         # Model Blocks
         x = self.embedding(sample)
         if hasattr(self, "effnet_mapper") and effnet is not None:
+            out = ops.size()(x)
+            out[1] = ops.size()(x, dim=1)
+            out[2] = ops.size()(x, dim=2)
+            out = [x._attrs["int_var"] for x in out]
+            out = Tensor(out)
             x = x + self.effnet_mapper(
-                nn.functional.interpolate(
-                    effnet, size=x.shape[-2:], mode="bilinear", align_corners=True
+                ops.upsampling2d(scale_factor=2.0, mode="bilinear", align_corners=True)(
+                    effnet, out=out
                 )
             )
         if hasattr(self, "pixels_mapper"):
-            x = x + nn.functional.interpolate(
-                self.pixels_mapper(pixels),
-                size=x.shape[-2:],
-                mode="bilinear",
-                align_corners=True,
-            )
+            out = ops.size()(x)
+            out[1] = ops.size()(x, dim=1)
+            out[2] = ops.size()(x, dim=2)
+            out = [x._attrs["int_var"] for x in out]
+            out = Tensor(out)
+            x = x + ops.upsampling2d(
+                scale_factor=2.0, mode="bilinear", align_corners=True
+            )(self.pixels_mapper(pixels), out=out)
         level_outputs = self._down_encode(x, timestep_ratio_embed, clip)
         x = self._up_decode(level_outputs, timestep_ratio_embed, clip)
         sample = self.clf(x)

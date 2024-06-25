@@ -48,3 +48,8 @@ Pad mode reflect
 
 Missing `repeat_interleave`
 - Various 3D unet
+
+upsampling2d - `align_corners=True`
+
+Missing `PixelUnshuffle`/`PixelShuffle`
+- `StableCascadeUNet`
