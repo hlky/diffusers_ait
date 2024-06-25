@@ -290,7 +290,7 @@ class UNet2DModel(nn.Module):
     def forward(
         self,
         sample: Tensor,
-        timestep: Union[Tensor, float, int],
+        timestep: Tensor,
         class_labels: Optional[Tensor] = None,
         return_dict: bool = True,
     ) -> Union[UNet2DOutput, Tuple]:
@@ -299,8 +299,8 @@ class UNet2DModel(nn.Module):
 
         Args:
             sample (`Tensor`):
-                The noisy input tensor with the following shape `(batch, channel, height, width)`.
-            timestep (`Tensor` or `float` or `int`): The number of timesteps to denoise an input.
+                The noisy input tensor with the following shape `(batch, height, width, channel)`.
+            timestep (`Tensor`): The number of timesteps to denoise an input.
             class_labels (`Tensor`, *optional*, defaults to `None`):
                 Optional class labels for conditioning. Their embeddings will be summed with the timestep embeddings.
             return_dict (`bool`, *optional*, defaults to `True`):

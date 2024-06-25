@@ -335,7 +335,6 @@ class I2VGenXLUNet(nn.Module):
             block_out_channels[0], out_channels, kernel_size=3, padding=1, dtype=dtype
         )
 
-    # Copied from diffusers.models.unets.unet_2d_condition.UNet2DConditionModel.set_attn_processor
     def set_attn_processor(
         self, processor: Union[AttentionProcessor, Dict[str, AttentionProcessor]]
     ):
@@ -375,7 +374,7 @@ class I2VGenXLUNet(nn.Module):
     def forward(
         self,
         sample: Tensor,
-        timestep: Union[Tensor, float, int],
+        timestep: Tensor,
         fps: Tensor,
         image_latents: Tensor,
         image_embeddings: Optional[Tensor] = None,
@@ -389,8 +388,8 @@ class I2VGenXLUNet(nn.Module):
 
         Args:
             sample (`Tensor`):
-                The noisy input tensor with the following shape `(batch, num_frames, channel, height, width`.
-            timestep (`Tensor` or `float` or `int`): The number of timesteps to denoise an input.
+                The noisy input tensor with the following shape `(batch, num_frames, height, width, channel`.
+            timestep (`Tensor`): The number of timesteps to denoise an input.
             fps (`Tensor`): Frames per second for the video being generated. Used as a "micro-condition".
             image_latents (`Tensor`): Image encodings from the VAE.
             image_embeddings (`Tensor`):

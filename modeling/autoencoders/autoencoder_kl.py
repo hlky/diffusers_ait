@@ -4,14 +4,7 @@ from aitemplate.compiler import ops
 
 from aitemplate.frontend import nn, Tensor
 
-from ..attention_processor import (
-    ADDED_KV_ATTENTION_PROCESSORS,
-    Attention,
-    AttentionProcessor,
-    AttnAddedKVProcessor,
-    AttnProcessor,
-    CROSS_ATTENTION_PROCESSORS,
-)
+from ..attention_processor import AttentionProcessor
 from ..modeling_outputs import AutoencoderKLOutput
 
 from .vae import Decoder, DecoderOutput, DiagonalGaussianDistribution, Encoder
@@ -160,7 +153,6 @@ class AutoencoderKL(nn.Module):
         """
         self.use_slicing = False
 
-    # Copied from diffusers.models.unets.unet_2d_condition.UNet2DConditionModel.set_attn_processor
     def set_attn_processor(
         self, processor: Union[AttentionProcessor, Dict[str, AttentionProcessor]]
     ):

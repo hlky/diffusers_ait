@@ -184,7 +184,6 @@ class PriorTransformer(nn.Module):
         self.clip_mean = nn.Parameter([1, clip_embed_dim], dtype=dtype)
         self.clip_std = nn.Parameter([1, clip_embed_dim], dtype=dtype)
 
-    # Copied from diffusers.models.unets.unet_2d_condition.UNet2DConditionModel.set_attn_processor
     def set_attn_processor(
         self, processor: Union[AttentionProcessor, Dict[str, AttentionProcessor]]
     ):
@@ -224,7 +223,7 @@ class PriorTransformer(nn.Module):
     def forward(
         self,
         hidden_states: Tensor,
-        timestep: Union[Tensor, float, int],
+        timestep: Tensor,
         proj_embedding: Tensor,
         encoder_hidden_states: Optional[Tensor] = None,
         attention_mask: Optional[Tensor] = None,

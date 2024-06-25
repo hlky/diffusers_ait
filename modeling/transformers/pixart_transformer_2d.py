@@ -188,7 +188,7 @@ class PixArtTransformer2DModel(nn.Module):
         The [`PixArtTransformer2DModel`] forward method.
 
         Args:
-            hidden_states (`Tensor` of shape `(batch size, channel, height, width)`):
+            hidden_states (`Tensor` of shape `(batch size, height, width, channel)`):
                 Input `hidden_states`.
             encoder_hidden_states (`Tensor` of shape `(batch size, sequence len, embed dims)`, *optional*):
                 Conditional embeddings for cross attention layer. If not given, cross-attention defaults to

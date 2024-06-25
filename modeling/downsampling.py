@@ -196,12 +196,11 @@ class FirDownsample2D(nn.Module):
     ) -> Tensor:
         """Fused `Conv2d()` followed by `downsample_2d()`.
         Padding is performed only once at the beginning, not between the operations. The fused op is considerably more
-        efficient than performing the same calculation using standard TensorFlow ops. It supports gradients of
-        arbitrary order.
+        efficient.
 
         Args:
             hidden_states (`Tensor`):
-                Input tensor of the shape `[N, C, H, W]` or `[N, H, W, C]`.
+                Input tensor of the shape `[N, H, W, C]`.
             weight (`Tensor`, *optional*):
                 Weight tensor of the shape `[filterH, filterW, inChannels, outChannels]`. Grouped convolution can be
                 performed by `inChannels = x.shape[0] // numGroups`.
@@ -215,7 +214,7 @@ class FirDownsample2D(nn.Module):
 
         Returns:
             output (`Tensor`):
-                Tensor of the shape `[N, C, H // factor, W // factor]` or `[N, H // factor, W // factor, C]`, and same
+                Tensor of the shape `[N, H // factor, W // factor, C]`, and same
                 datatype as `x`.
         """
         raise NotImplementedError("`torch.outer`, `upfirdn2d_native`")
@@ -287,7 +286,7 @@ class KDownsample2D(nn.Module):
         kernel_1d.T @ kernel_1d
         """
         kernel_1d = Tensor([1, 4], name="kernel")
-        self.pad = kernel_1d.shape()[1] // 2 - 1
+        self.pad = ops.size()(kernel_1d, dim=1) / 2 - 1
         self.kernel = kernel_1d
 
     def forward(self, inputs: Tensor) -> Tensor:
@@ -314,14 +313,14 @@ def downsample_2d(
     gain: float = 1,
 ) -> Tensor:
     r"""Downsample2D a batch of 2D images with the given filter.
-    Accepts a batch of 2D images of the shape `[N, C, H, W]` or `[N, H, W, C]` and downsamples each image with the
+    Accepts a batch of 2D images of the shape `[N, H, W, C]` and downsamples each image with the
     given filter. The filter is normalized so that if the input pixels are constant, they will be scaled by the
     specified `gain`. Pixels outside the image are assumed to be zero, and the filter is padded with zeros so that its
     shape is a multiple of the downsampling factor.
 
     Args:
         hidden_states (`Tensor`)
-            Input tensor of the shape `[N, C, H, W]` or `[N, H, W, C]`.
+            Input tensor of the shape `[N, H, W, C]`.
         kernel (`Tensor`, *optional*):
             FIR filter of the shape `[firH, firW]` or `[firN]` (separable). The default is `[1] * factor`, which
             corresponds to average pooling.
@@ -332,7 +331,7 @@ def downsample_2d(
 
     Returns:
         output (`Tensor`):
-            Tensor of the shape `[N, C, H // factor, W // factor]`
+            Tensor of the shape `[N, H // factor, W // factor, C]`
     """
     raise NotImplementedError("`torch.outer`, `upfirdn2d_native`")
     assert isinstance(factor, int) and factor >= 1

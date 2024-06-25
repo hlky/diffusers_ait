@@ -160,6 +160,7 @@ class ResnetBlockCondNorm2D(nn.Module):
                     kernel_size=1,
                     stride=1,
                     padding=0,
+                    dtype=dtype,
                 )
                 if conv_shortcut_bias
                 else nn.Conv2d(
@@ -168,6 +169,7 @@ class ResnetBlockCondNorm2D(nn.Module):
                     kernel_size=1,
                     stride=1,
                     padding=0,
+                    dtype=dtype,
                 )
             )
 
@@ -432,7 +434,6 @@ class ResnetBlock2D(nn.Module):
         return output_tensor
 
 
-# unet_rl.py
 def rearrange_dims(tensor: Tensor) -> Tensor:
     shape = ops.size()(tensor)
     if len(shape) == 2:
@@ -489,7 +490,6 @@ class Conv1dBlock(nn.Module):
         return ops.squeeze(2)(output)
 
 
-# unet_rl.py
 class ResidualTemporalBlock1D(nn.Module):
     """
     Residual 1D block with temporal convolutions.
@@ -793,9 +793,6 @@ class SpatioTemporalResBlock(nn.Module):
         hidden_states = ops.reshape()(
             hidden_states, [batch_frames, height, width, channels]
         )
-        # hidden_states = hidden_states.permute(0, 2, 1, 3, 4).reshape(
-        #     batch_frames, channels, height, width
-        # )
         return hidden_states
 
 

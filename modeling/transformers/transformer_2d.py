@@ -377,7 +377,7 @@ class Transformer2DModel(nn.Module):
         The [`Transformer2DModel`] forward method.
 
         Args:
-            hidden_states (`Tensor` of shape `(batch size, num latent pixels)` if discrete, `Tensor` of shape `(batch size, channel, height, width)` if continuous):
+            hidden_states (`Tensor` of shape `(batch size, num latent pixels)` if discrete, `Tensor` of shape `(batch size, height, width, channel)` if continuous):
                 Input `hidden_states`.
             encoder_hidden_states ( `Tensor` of shape `(batch size, sequence len, embed dims)`, *optional*):
                 Conditional embeddings for cross attention layer. If not given, cross-attention defaults to

@@ -1,5 +1,7 @@
 import math
 
+from typing import Optional
+
 import numpy as np
 from aitemplate.compiler import ops
 
@@ -251,21 +253,16 @@ class PixArtAlphaCombinedTimestepSizeEmbeddings(nn.Module):
                 resolution is not None and aspect_ratio is not None
             ), "Additional conditions are required."
             resolution_emb = self.additional_condition_proj(ops.flatten()(resolution))
-            print(get_shape(resolution_emb))
             resolution_emb = ops.reshape()(
                 self.resolution_embedder(resolution_emb), [batch_size, -1]
             )
             aspect_ratio_emb = self.additional_condition_proj_ar(
                 ops.flatten()(aspect_ratio)
             )
-            print(get_shape(aspect_ratio_emb))
             aspect_ratio_emb = ops.reshape()(
                 self.aspect_ratio_embedder(aspect_ratio_emb), [batch_size, -1]
             )
-            print(get_shape(resolution_emb))
-            print(get_shape(aspect_ratio_emb))
             emb = ops.concatenate()([resolution_emb, aspect_ratio_emb], dim=1)
-            print(get_shape(emb))
             conditioning = timesteps_emb + emb
         else:
             conditioning = timesteps_emb
@@ -344,10 +341,10 @@ class PixArtAlphaTextProjection(nn.Module):
 
     def __init__(
         self,
-        in_features,
-        hidden_size,
-        out_features=None,
-        act_fn="gelu_tanh",
+        in_features: int,
+        hidden_size: int,
+        out_features: Optional[int] = None,
+        act_fn: str = "gelu_tanh",
         dtype: str = "float16",
     ):
         super().__init__()
@@ -364,7 +361,7 @@ class PixArtAlphaTextProjection(nn.Module):
             raise ValueError(f"Unknown activation function: {act_fn}")
         self.linear_2 = nn.Linear(hidden_size, hidden_size, dtype=dtype)
 
-    def forward(self, caption):
+    def forward(self, caption: Tensor):
         hidden_states = self.linear_1(caption)
         hidden_states = self.linear_2(hidden_states)
         return hidden_states
@@ -380,7 +377,13 @@ class LabelEmbedding(nn.Module):
         dropout_prob (`float`): The probability of dropping a label.
     """
 
-    def __init__(self, num_classes, hidden_size, dropout_prob, dtype: str = "float16"):
+    def __init__(
+        self,
+        num_classes: int,
+        hidden_size: int,
+        dropout_prob: float,
+        dtype: str = "float16",
+    ):
         super().__init__()
         use_cfg_embedding = dropout_prob > 0
         self.embedding_table = nn.Embedding(
@@ -391,7 +394,7 @@ class LabelEmbedding(nn.Module):
         # NOTE: AIT workaround
         self.training = False
 
-    def token_drop(self, labels, force_drop_ids=None):
+    def token_drop(self, labels: Tensor, force_drop_ids: Optional[Tensor] = None):
         """
         Drops labels to enable classifier-free guidance.
         """
@@ -405,7 +408,7 @@ class LabelEmbedding(nn.Module):
         labels = ops.where()(drop_ids, self.num_classes, labels)
         return labels
 
-    def forward(self, labels: Tensor, force_drop_ids=None):
+    def forward(self, labels: Tensor, force_drop_ids: Optional[Tensor] = None):
         use_dropout = self.dropout_prob > 0
         if (self.training and use_dropout) or (force_drop_ids is not None):
             labels = self.token_drop(labels, force_drop_ids)
@@ -416,7 +419,11 @@ class LabelEmbedding(nn.Module):
 
 class CombinedTimestepLabelEmbeddings(nn.Module):
     def __init__(
-        self, num_classes, embedding_dim, class_dropout_prob=0.1, dtype: str = "float16"
+        self,
+        num_classes: int,
+        embedding_dim: int,
+        class_dropout_prob: float = 0.1,
+        dtype: str = "float16",
     ):
         super().__init__()
 
@@ -438,7 +445,7 @@ class CombinedTimestepLabelEmbeddings(nn.Module):
             dtype=dtype,
         )
 
-    def forward(self, timestep, class_labels, hidden_dtype=None):
+    def forward(self, timestep: Tensor, class_labels: Tensor, hidden_dtype=None):
         timesteps_proj = self.time_proj(timestep)
         timesteps_emb = self.timestep_embedder(timesteps_proj)  # (N, D)
 
@@ -456,9 +463,9 @@ class GaussianFourierProjection(nn.Module):
         self,
         embedding_size: int = 256,
         scale: float = 1.0,
-        set_W_to_weight=True,
-        log=True,
-        flip_sin_to_cos=False,
+        set_W_to_weight: bool = True,
+        log: bool = True,
+        flip_sin_to_cos: bool = False,
         dtype: str = "float16",
     ):
         super().__init__()
@@ -472,7 +479,7 @@ class GaussianFourierProjection(nn.Module):
 
             self.weight = self.W
 
-    def forward(self, x):
+    def forward(self, x: Tensor):
         if self.log:
             x = ops.log(x)
 

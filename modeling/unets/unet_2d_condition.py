@@ -795,9 +795,7 @@ class UNet2DConditionModel(nn.Module):
         for name, module in self.named_children():
             fn_recursive_attn_processor(name, module, processor)
 
-    def get_time_embed(
-        self, sample: Tensor, timestep: Union[Tensor, float, int]
-    ) -> Optional[Tensor]:
+    def get_time_embed(self, sample: Tensor, timestep: Tensor) -> Optional[Tensor]:
         timesteps = timestep
 
         # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
@@ -941,7 +939,7 @@ class UNet2DConditionModel(nn.Module):
     def forward(
         self,
         sample: Tensor,
-        timestep: Union[Tensor, float, int],
+        timestep: Tensor,
         encoder_hidden_states: Tensor,
         class_labels: Optional[Tensor] = None,
         timestep_cond: Optional[Tensor] = None,
@@ -960,7 +958,7 @@ class UNet2DConditionModel(nn.Module):
         Args:
             sample (`Tensor`):
                 The noisy input tensor with the following shape `(batch, height, width, channel)`.
-            timestep (`Tensor` or `float` or `int`): The number of timesteps to denoise an input.
+            timestep (`Tensor`): The number of timesteps to denoise an input.
             encoder_hidden_states (`Tensor`):
                 The encoder hidden states with shape `(batch, sequence_length, feature_dim)`.
             class_labels (`Tensor`, *optional*, defaults to `None`):

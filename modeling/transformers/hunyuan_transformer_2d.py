@@ -172,7 +172,6 @@ class HunyuanDiTBlock(nn.Module):
         self._chunk_size = None
         self._chunk_dim = 0
 
-    # Copied from diffusers.models.attention.BasicTransformerBlock.set_chunk_feed_forward
     def set_chunk_feed_forward(self, chunk_size: Optional[int], dim: int = 0):
         # Sets chunk feed-forward
         self._chunk_size = chunk_size
@@ -345,7 +344,6 @@ class HunyuanDiT2DModel(nn.Module):
             dtype=dtype,
         )
 
-    # Copied from diffusers.models.unets.unet_2d_condition.UNet2DConditionModel.set_attn_processor
     def set_attn_processor(
         self, processor: Union[AttentionProcessor, Dict[str, AttentionProcessor]]
     ):
@@ -492,8 +490,8 @@ class HunyuanDiT2DModel(nn.Module):
 
         # unpatchify: (N, out_channels, H, W)
         patch_size = self.pos_embed.patch_size
-        height = height // patch_size
-        width = width // patch_size
+        height = height / patch_size
+        width = width / patch_size
 
         hidden_states = ops.reshape()(
             hidden_states,

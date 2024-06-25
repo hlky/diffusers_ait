@@ -115,7 +115,6 @@ class SD3Transformer2DModel(nn.Module):
 
         self.gradient_checkpointing = False
 
-    # Copied from diffusers.models.unets.unet_2d_condition.UNet2DConditionModel.set_attn_processor
     def set_attn_processor(
         self, processor: Union[AttentionProcessor, Dict[str, AttentionProcessor]]
     ):
@@ -166,7 +165,7 @@ class SD3Transformer2DModel(nn.Module):
         The [`SD3Transformer2DModel`] forward method.
 
         Args:
-            hidden_states (`Tensor` of shape `(batch size, channel, height, width)`):
+            hidden_states (`Tensor` of shape `(batch size, height, width, channel)`):
                 Input `hidden_states`.
             encoder_hidden_states (`Tensor` of shape `(batch size, sequence_len, embed_dims)`):
                 Conditional embeddings (embeddings computed from the input conditions such as prompts) to use.

@@ -289,7 +289,6 @@ class UNet3DConditionModel(nn.Module):
             dtype=dtype,
         )
 
-    # Copied from diffusers.models.unets.unet_2d_condition.UNet2DConditionModel.set_attn_processor
     def set_attn_processor(
         self, processor: Union[AttentionProcessor, Dict[str, AttentionProcessor]]
     ):
@@ -329,7 +328,7 @@ class UNet3DConditionModel(nn.Module):
     def forward(
         self,
         sample: Tensor,
-        timestep: Union[Tensor, float, int],
+        timestep: Tensor,
         encoder_hidden_states: Tensor,
         class_labels: Optional[Tensor] = None,
         timestep_cond: Optional[Tensor] = None,
@@ -345,7 +344,7 @@ class UNet3DConditionModel(nn.Module):
         Args:
             sample (`Tensor`):
                 The noisy input tensor with the following shape `(batch, num_frames, height, width, num_channels)`.
-            timestep (`Tensor` or `float` or `int`): The number of timesteps to denoise an input.
+            timestep (`Tensor`): The number of timesteps to denoise an input.
             encoder_hidden_states (`Tensor`):
                 The encoder hidden states with shape `(batch, sequence_length, feature_dim)`.
             class_labels (`Tensor`, *optional*, defaults to `None`):

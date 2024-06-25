@@ -452,7 +452,6 @@ class UNetMotionModel(nn.Module):
             dtype=dtype,
         )
 
-    # Copied from diffusers.models.unets.unet_2d_condition.UNet2DConditionModel.set_attn_processor
     def set_attn_processor(
         self, processor: Union[AttentionProcessor, Dict[str, AttentionProcessor]]
     ):
@@ -492,7 +491,7 @@ class UNetMotionModel(nn.Module):
     def forward(
         self,
         sample: Tensor,
-        timestep: Union[Tensor, float, int],
+        timestep: Tensor,
         encoder_hidden_states: Tensor,
         timestep_cond: Optional[Tensor] = None,
         attention_mask: Optional[Tensor] = None,
@@ -507,8 +506,8 @@ class UNetMotionModel(nn.Module):
 
         Args:
             sample (`Tensor`):
-                The noisy input tensor with the following shape `(batch, num_frames, channel, height, width`.
-            timestep (`Tensor` or `float` or `int`): The number of timesteps to denoise an input.
+                The noisy input tensor with the following shape `(batch, num_frames, height, width, channel`.
+            timestep (`Tensor`): The number of timesteps to denoise an input.
             encoder_hidden_states (`Tensor`):
                 The encoder hidden states with shape `(batch, sequence_length, feature_dim)`.
             timestep_cond: (`Tensor`, *optional*, defaults to `None`):

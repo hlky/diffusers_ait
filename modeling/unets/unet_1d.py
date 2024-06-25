@@ -204,7 +204,7 @@ class UNet1DModel(nn.Module):
     def forward(
         self,
         sample: Tensor,
-        timestep: Union[Tensor, float, int],
+        timestep: Tensor,
         return_dict: bool = True,
     ) -> Union[UNet1DOutput, Tuple]:
         r"""
@@ -213,7 +213,7 @@ class UNet1DModel(nn.Module):
         Args:
             sample (`Tensor`):
                 The noisy input tensor with the following shape `(batch_size, num_channels, sample_size)`.
-            timestep (`Tensor` or `float` or `int`): The number of timesteps to denoise an input.
+            timestep (`Tensor`): The number of timesteps to denoise an input.
             return_dict (`bool`, *optional*, defaults to `True`):
                 Whether or not to return a [`~models.unets.unet_1d.UNet1DOutput`] instead of a plain tuple.
 

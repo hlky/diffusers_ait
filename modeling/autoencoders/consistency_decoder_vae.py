@@ -153,7 +153,6 @@ class ConsistencyDecoderVAE(nn.Module):
         )
         self.tile_overlap_factor = 0.25
 
-    # Copied from diffusers.models.autoencoders.autoencoder_kl.AutoencoderKL.enable_tiling
     def enable_tiling(self, use_tiling: bool = True):
         r"""
         Enable tiled VAE decoding. When this option is enabled, the VAE will split the input tensor into tiles to
@@ -162,7 +161,6 @@ class ConsistencyDecoderVAE(nn.Module):
         """
         self.use_tiling = use_tiling
 
-    # Copied from diffusers.models.autoencoders.autoencoder_kl.AutoencoderKL.disable_tiling
     def disable_tiling(self):
         r"""
         Disable tiled VAE decoding. If `enable_tiling` was previously enabled, this method will go back to computing
@@ -170,7 +168,6 @@ class ConsistencyDecoderVAE(nn.Module):
         """
         self.enable_tiling(False)
 
-    # Copied from diffusers.models.autoencoders.autoencoder_kl.AutoencoderKL.enable_slicing
     def enable_slicing(self):
         r"""
         Enable sliced VAE decoding. When this option is enabled, the VAE will split the input tensor in slices to
@@ -178,7 +175,6 @@ class ConsistencyDecoderVAE(nn.Module):
         """
         self.use_slicing = True
 
-    # Copied from diffusers.models.autoencoders.autoencoder_kl.AutoencoderKL.disable_slicing
     def disable_slicing(self):
         r"""
         Disable sliced VAE decoding. If `enable_slicing` was previously enabled, this method will go back to computing
@@ -186,7 +182,6 @@ class ConsistencyDecoderVAE(nn.Module):
         """
         self.use_slicing = False
 
-    # Copied from diffusers.models.unets.unet_2d_condition.UNet2DConditionModel.set_attn_processor
     def set_attn_processor(
         self, processor: Union[AttentionProcessor, Dict[str, AttentionProcessor]]
     ):
@@ -315,7 +310,6 @@ class ConsistencyDecoderVAE(nn.Module):
 
         return DecoderOutput(sample=x_0)
 
-    # Copied from diffusers.models.autoencoders.autoencoder_kl.AutoencoderKL.blend_v
     def blend_v(self, a: Tensor, b: Tensor, blend_extent: int) -> Tensor:
         blend_extent = min(a.shape[2], b.shape[2], blend_extent)
         for y in range(blend_extent):
@@ -324,7 +318,6 @@ class ConsistencyDecoderVAE(nn.Module):
             ] * (y / blend_extent)
         return b
 
-    # Copied from diffusers.models.autoencoders.autoencoder_kl.AutoencoderKL.blend_h
     def blend_h(self, a: Tensor, b: Tensor, blend_extent: int) -> Tensor:
         blend_extent = min(a.shape[3], b.shape[3], blend_extent)
         for x in range(blend_extent):

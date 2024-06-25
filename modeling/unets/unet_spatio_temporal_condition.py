@@ -307,7 +307,7 @@ class UNetSpatioTemporalConditionModel(nn.Module):
     def forward(
         self,
         sample: Tensor,
-        timestep: Union[Tensor, float, int],
+        timestep: Tensor,
         encoder_hidden_states: Tensor,
         added_time_ids: Tensor,
         return_dict: bool = True,
@@ -317,8 +317,8 @@ class UNetSpatioTemporalConditionModel(nn.Module):
 
         Args:
             sample (`Tensor`):
-                The noisy input tensor with the following shape `(batch, num_frames, channel, height, width)`.
-            timestep (`Tensor` or `float` or `int`): The number of timesteps to denoise an input.
+                The noisy input tensor with the following shape `(batch, num_frames, height, width, channel)`.
+            timestep (`Tensor`): The number of timesteps to denoise an input.
             encoder_hidden_states (`Tensor`):
                 The encoder hidden states with shape `(batch, sequence_length, cross_attention_dim)`.
             added_time_ids: (`Tensor`):
@@ -355,7 +355,7 @@ class UNetSpatioTemporalConditionModel(nn.Module):
         emb = emb + aug_emb
 
         # Flatten the batch and frames dimensions
-        # sample: [batch, frames, channels, height, width] -> [batch * frames, channels, height, width]
+        # sample: [batch, frames, height, width, channels] -> [batch * frames, height, width, channels]
         sample = ops.flatten(0, 1)(sample)
         # Repeat the embeddings num_video_frames times
         # emb: [batch, channels] -> [batch * frames, channels]

@@ -140,7 +140,7 @@ class DiTTransformer2DModel(nn.Module):
         The [`DiTTransformer2DModel`] forward method.
 
         Args:
-            hidden_states (`Tensor` of shape `(batch size, num latent pixels)` if discrete, `Tensor` of shape `(batch size, channel, height, width)` if continuous):
+            hidden_states (`Tensor` of shape `(batch size, num latent pixels)` if discrete, `Tensor` of shape `(batch size, height, width, channel)` if continuous):
                 Input `hidden_states`.
             timestep ( `Tensor`, *optional*):
                 Used to indicate denoising step. Optional timestep to be applied as an embedding in `AdaLayerNorm`.

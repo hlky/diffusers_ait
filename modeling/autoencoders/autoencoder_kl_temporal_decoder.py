@@ -196,7 +196,6 @@ class AutoencoderKLTemporalDecoder(nn.Module):
         )
         self.tile_overlap_factor = 0.25
 
-    # Copied from diffusers.models.unets.unet_2d_condition.UNet2DConditionModel.set_attn_processor
     def set_attn_processor(
         self, processor: Union[AttentionProcessor, Dict[str, AttentionProcessor]]
     ):
