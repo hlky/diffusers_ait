@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Dict, Tuple, Union
+from typing import Dict, Optional, Tuple, Union
 
 from aitemplate.compiler import ops
 
@@ -7,7 +7,7 @@ from aitemplate.frontend import nn, Tensor
 
 from ...utils import BaseOutput
 from ..attention_processor import Attention, AttentionProcessor
-from ..embeddings import TimestepEmbedding, Timesteps
+from ..embeddings import SiLU, TimestepEmbedding, Timesteps
 
 
 @dataclass
@@ -16,12 +16,14 @@ class Kandinsky3UNetOutput(BaseOutput):
 
 
 class Kandinsky3EncoderProj(nn.Module):
-    def __init__(self, encoder_hid_dim, cross_attention_dim):
+    def __init__(
+        self, encoder_hid_dim: int, cross_attention_dim: int, dtype: str = "float16"
+    ):
         super().__init__()
         self.projection_linear = nn.Linear(
-            encoder_hid_dim, cross_attention_dim, bias=False
+            encoder_hid_dim, cross_attention_dim, bias=False, dtype=dtype
         )
-        self.projection_norm = nn.LayerNorm(cross_attention_dim)
+        self.projection_norm = nn.LayerNorm(cross_attention_dim, dtype=dtype)
 
     def forward(self, x):
         x = self.projection_linear(x)
@@ -41,6 +43,7 @@ class Kandinsky3UNet(nn.Module):
         block_out_channels: Tuple[int] = (384, 768, 1536, 3072),
         cross_attention_dim: Union[int, Tuple[int]] = 4096,
         encoder_hid_dim: int = 4096,
+        dtype: str = "float16",
     ):
         super().__init__()
 
@@ -53,22 +56,23 @@ class Kandinsky3UNet(nn.Module):
         out_channels = in_channels
         init_channels = block_out_channels[0] // 2
         self.time_proj = Timesteps(
-            init_channels, flip_sin_to_cos=False, downscale_freq_shift=1
+            init_channels, flip_sin_to_cos=False, downscale_freq_shift=1, dtype=dtype
         )
 
         self.time_embedding = TimestepEmbedding(
-            init_channels,
-            time_embedding_dim,
+            init_channels, time_embedding_dim, dtype=dtype
         )
 
         self.add_time_condition = Kandinsky3AttentionPooling(
-            time_embedding_dim, cross_attention_dim, attention_head_dim
+            time_embedding_dim, cross_attention_dim, attention_head_dim, dtype=dtype
         )
 
-        self.conv_in = nn.Conv2d(in_channels, init_channels, kernel_size=3, padding=1)
+        self.conv_in = nn.Conv2dBias(
+            in_channels, init_channels, kernel_size=3, padding=1, dtype=dtype
+        )
 
         self.encoder_hid_proj = Kandinsky3EncoderProj(
-            encoder_hid_dim, cross_attention_dim
+            encoder_hid_dim, cross_attention_dim, dtype=dtype
         )
 
         hidden_dims = [init_channels] + list(block_out_channels)
@@ -105,6 +109,7 @@ class Kandinsky3UNet(nn.Module):
                     compression_ratio,
                     down_sample,
                     self_attention,
+                    dtype=dtype,
                 )
             )
 
@@ -130,12 +135,15 @@ class Kandinsky3UNet(nn.Module):
                     compression_ratio,
                     up_sample,
                     self_attention,
+                    dtype=dtype,
                 )
             )
 
         self.conv_norm_out = nn.GroupNorm(groups, init_channels)
-        self.conv_act_out = nn.SiLU()
-        self.conv_out = nn.Conv2d(init_channels, out_channels, kernel_size=3, padding=1)
+        self.conv_act_out = ops.silu
+        self.conv_out = nn.Conv2dBias(
+            init_channels, out_channels, kernel_size=3, padding=1, dtype=dtype
+        )
 
     def set_attn_processor(
         self, processor: Union[AttentionProcessor, Dict[str, AttentionProcessor]]
@@ -175,24 +183,21 @@ class Kandinsky3UNet(nn.Module):
 
     def forward(
         self,
-        sample,
-        timestep,
-        encoder_hidden_states=None,
-        encoder_attention_mask=None,
-        return_dict=True,
+        sample: Tensor,
+        timestep: Tensor,
+        encoder_hidden_states: Optional[Tensor] = None,
+        encoder_attention_mask: Optional[Tensor] = None,
+        return_dict: bool = True,
     ):
         if encoder_attention_mask is not None:
             encoder_attention_mask = (
-                1 - encoder_attention_mask.to(sample.dtype)
+                1 - ops.cast()(encoder_attention_mask, dtype=hidden_states.dtype())
             ) * -10000.0
-            encoder_attention_mask = encoder_attention_mask.unsqueeze(1)
-
-        if len(timestep.shape) == 0:
-            timestep = timestep[None].to(sample.device)
+            encoder_attention_mask = ops.unsqueeze(1)(encoder_attention_mask)
 
         # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
-        timestep = timestep.expand(sample.shape[0])
-        time_embed_input = self.time_proj(timestep).to(sample.dtype)
+        timestep = ops.expand()(timestep, [ops.size()(sample, dim=0)])
+        time_embed_input = ops.cast()(self.time_proj(timestep), dtype=sample.dtype())
         time_embed = self.time_embedding(time_embed_input)
 
         encoder_hidden_states = self.encoder_hid_proj(encoder_hidden_states)
@@ -213,7 +218,7 @@ class Kandinsky3UNet(nn.Module):
 
         for level, up_sample in enumerate(self.up_blocks):
             if level != 0:
-                sample = torch.cat([sample, hidden_states.pop()], dim=1)
+                sample = ops.concatenate()([sample, hidden_states.pop()], dim=1)
             sample = up_sample(
                 sample, time_embed, encoder_hidden_states, encoder_attention_mask
             )
@@ -242,6 +247,7 @@ class Kandinsky3UpSampleBlock(nn.Module):
         compression_ratio=2,
         up_sample=True,
         self_attention=True,
+        dtype: str = "float16",
     ):
         super().__init__()
         up_resolutions = [[None, True if up_sample else None, None, None]] + [
@@ -268,6 +274,7 @@ class Kandinsky3UpSampleBlock(nn.Module):
                     groups,
                     head_dim,
                     expansion_ratio,
+                    dtype=dtype,
                 )
             )
         else:
@@ -284,6 +291,7 @@ class Kandinsky3UpSampleBlock(nn.Module):
                     groups,
                     compression_ratio,
                     up_resolution,
+                    dtype=dtype,
                 )
             )
 
@@ -296,6 +304,7 @@ class Kandinsky3UpSampleBlock(nn.Module):
                         groups,
                         head_dim,
                         expansion_ratio,
+                        dtype=dtype,
                     )
                 )
             else:
@@ -303,7 +312,12 @@ class Kandinsky3UpSampleBlock(nn.Module):
 
             resnets_out.append(
                 Kandinsky3ResNetBlock(
-                    in_channel, out_channel, time_embed_dim, groups, compression_ratio
+                    in_channel,
+                    out_channel,
+                    time_embed_dim,
+                    groups,
+                    compression_ratio,
+                    dtype=dtype,
                 )
             )
 
@@ -339,6 +353,7 @@ class Kandinsky3DownSampleBlock(nn.Module):
         compression_ratio=2,
         down_sample=True,
         self_attention=True,
+        dtype: str = "float16",
     ):
         super().__init__()
         attentions = []
@@ -351,7 +366,13 @@ class Kandinsky3DownSampleBlock(nn.Module):
         if self_attention:
             attentions.append(
                 Kandinsky3AttentionBlock(
-                    in_channels, time_embed_dim, None, groups, head_dim, expansion_ratio
+                    in_channels,
+                    time_embed_dim,
+                    None,
+                    groups,
+                    head_dim,
+                    expansion_ratio,
+                    dtype=dtype,
                 )
             )
         else:
@@ -368,7 +389,12 @@ class Kandinsky3DownSampleBlock(nn.Module):
         ):
             resnets_in.append(
                 Kandinsky3ResNetBlock(
-                    in_channel, out_channel, time_embed_dim, groups, compression_ratio
+                    in_channel,
+                    out_channel,
+                    time_embed_dim,
+                    groups,
+                    compression_ratio,
+                    dtype=dtype,
                 )
             )
 
@@ -381,6 +407,7 @@ class Kandinsky3DownSampleBlock(nn.Module):
                         groups,
                         head_dim,
                         expansion_ratio,
+                        dtype=dtype,
                     )
                 )
             else:
@@ -394,6 +421,7 @@ class Kandinsky3DownSampleBlock(nn.Module):
                     groups,
                     compression_ratio,
                     up_resolution,
+                    dtype=dtype,
                 )
             )
 
@@ -416,22 +444,26 @@ class Kandinsky3DownSampleBlock(nn.Module):
 
 
 class Kandinsky3ConditionalGroupNorm(nn.Module):
-    def __init__(self, groups, normalized_shape, context_dim):
+    def __init__(
+        self,
+        groups: int,
+        normalized_shape: int,
+        context_dim: int,
+        dtype: str = "float16",
+    ):
         super().__init__()
-        self.norm = nn.GroupNorm(groups, normalized_shape, affine=False)
+        self.norm = nn.GroupNorm(groups, normalized_shape, affine=False, dtype=dtype)
         self.context_mlp = nn.Sequential(
-            nn.SiLU(), nn.Linear(context_dim, 2 * normalized_shape)
+            SiLU(), nn.Linear(context_dim, 2 * normalized_shape, dtype=dtype)
         )
-        self.context_mlp[1].weight.data.zero_()
-        self.context_mlp[1].bias.data.zero_()
 
     def forward(self, x, context):
         context = self.context_mlp(context)
 
-        for _ in range(len(x.shape[2:])):
-            context = context.unsqueeze(-1)
+        for _ in range(len(ops.size()(x)[1:2])):
+            context = ops.unsqueeze(-1)(context)
 
-        scale, shift = context.chunk(2, dim=1)
+        scale, shift = ops.chunk()(context, 2, dim=1)
         x = self.norm(x) * (scale + 1.0) + shift
         return x
 
@@ -445,27 +477,32 @@ class Kandinsky3Block(nn.Module):
         kernel_size=3,
         norm_groups=32,
         up_resolution=None,
+        dtype: str = "float16",
     ):
         super().__init__()
         self.group_norm = Kandinsky3ConditionalGroupNorm(
-            norm_groups, in_channels, time_embed_dim
+            norm_groups, in_channels, time_embed_dim, dtype=dtype
         )
-        self.activation = nn.SiLU()
+        self.activation = SiLU()
         if up_resolution is not None and up_resolution:
-            self.up_sample = nn.ConvTranspose2d(
-                in_channels, in_channels, kernel_size=2, stride=2
+            self.up_sample = nn.ConvTranspose2dBias(
+                in_channels, in_channels, kernel_size=2, stride=2, dtype=dtype
             )
         else:
             self.up_sample = nn.Identity()
 
         padding = int(kernel_size > 1)
-        self.projection = nn.Conv2d(
-            in_channels, out_channels, kernel_size=kernel_size, padding=padding
+        self.projection = nn.Conv2dBias(
+            in_channels,
+            out_channels,
+            kernel_size=kernel_size,
+            padding=padding,
+            dtype=dtype,
         )
 
         if up_resolution is not None and not up_resolution:
-            self.down_sample = nn.Conv2d(
-                out_channels, out_channels, kernel_size=2, stride=2
+            self.down_sample = nn.Conv2dBias(
+                out_channels, out_channels, kernel_size=2, stride=2, dtype=dtype
             )
         else:
             self.down_sample = nn.Identity()
@@ -488,6 +525,7 @@ class Kandinsky3ResNetBlock(nn.Module):
         norm_groups=32,
         compression_ratio=2,
         up_resolutions=4 * [None],
+        dtype: str = "float16",
     ):
         super().__init__()
         kernel_sizes = [1, 3, 3, 1]
@@ -506,6 +544,7 @@ class Kandinsky3ResNetBlock(nn.Module):
                     kernel_size,
                     norm_groups,
                     up_resolution,
+                    dtype=dtype,
                 )
                 for (in_channel, out_channel), kernel_size, up_resolution in zip(
                     hidden_channels, kernel_sizes, up_resolutions
@@ -513,22 +552,26 @@ class Kandinsky3ResNetBlock(nn.Module):
             ]
         )
         self.shortcut_up_sample = (
-            nn.ConvTranspose2d(in_channels, in_channels, kernel_size=2, stride=2)
+            nn.ConvTranspose2dBias(
+                in_channels, in_channels, kernel_size=2, stride=2, dtype=dtype
+            )
             if True in up_resolutions
             else nn.Identity()
         )
         self.shortcut_projection = (
-            nn.Conv2d(in_channels, out_channels, kernel_size=1)
+            nn.Conv2dBias(in_channels, out_channels, kernel_size=1, dtype=dtype)
             if in_channels != out_channels
             else nn.Identity()
         )
         self.shortcut_down_sample = (
-            nn.Conv2d(out_channels, out_channels, kernel_size=2, stride=2)
+            nn.Conv2dBias(
+                out_channels, out_channels, kernel_size=2, stride=2, dtype=dtype
+            )
             if False in up_resolutions
             else nn.Identity()
         )
 
-    def forward(self, x, time_embed):
+    def forward(self, x: Tensor, time_embed: Tensor):
         out = x
         for resnet_block in self.resnet_blocks:
             out = resnet_block(out, time_embed)
@@ -541,7 +584,13 @@ class Kandinsky3ResNetBlock(nn.Module):
 
 
 class Kandinsky3AttentionPooling(nn.Module):
-    def __init__(self, num_channels, context_dim, head_dim=64):
+    def __init__(
+        self,
+        num_channels: int,
+        context_dim: int,
+        head_dim: int = 64,
+        dtype: str = "float16",
+    ):
         super().__init__()
         self.attention = Attention(
             context_dim,
@@ -549,14 +598,17 @@ class Kandinsky3AttentionPooling(nn.Module):
             dim_head=head_dim,
             out_dim=num_channels,
             out_bias=False,
+            dtype=dtype,
         )
 
-    def forward(self, x, context, context_mask=None):
-        context_mask = context_mask.to(dtype=context.dtype)
+    def forward(
+        self, x: Tensor, context: Tensor, context_mask: Optional[Tensor] = None
+    ):
+        context_mask = ops.cast()(context_mask, dtype=context.dtype())
         context = self.attention(
-            context.mean(dim=1, keepdim=True), context, context_mask
+            ops.reduce_mean(dim=1, keepdim=True)(context), context, context_mask
         )
-        return x + context.squeeze(1)
+        return x + ops.squeeze(1)(context)
 
 
 class Kandinsky3AttentionBlock(nn.Module):
@@ -568,10 +620,11 @@ class Kandinsky3AttentionBlock(nn.Module):
         norm_groups=32,
         head_dim=64,
         expansion_ratio=4,
+        dtype: str = "float16",
     ):
         super().__init__()
         self.in_norm = Kandinsky3ConditionalGroupNorm(
-            norm_groups, num_channels, time_embed_dim
+            norm_groups, num_channels, time_embed_dim, dtype=dtype
         )
         self.attention = Attention(
             num_channels,
@@ -579,29 +632,37 @@ class Kandinsky3AttentionBlock(nn.Module):
             dim_head=head_dim,
             out_dim=num_channels,
             out_bias=False,
+            dtype=dtype,
         )
 
         hidden_channels = expansion_ratio * num_channels
         self.out_norm = Kandinsky3ConditionalGroupNorm(
-            norm_groups, num_channels, time_embed_dim
+            norm_groups, num_channels, time_embed_dim, dtype=dtype
         )
         self.feed_forward = nn.Sequential(
-            nn.Conv2d(num_channels, hidden_channels, kernel_size=1, bias=False),
-            nn.SiLU(),
-            nn.Conv2d(hidden_channels, num_channels, kernel_size=1, bias=False),
+            nn.Conv2d(num_channels, hidden_channels, kernel_size=1, dtype=dtype),
+            SiLU(),
+            nn.Conv2d(hidden_channels, num_channels, kernel_size=1, dtype=dtype),
         )
 
-    def forward(self, x, time_embed, context=None, context_mask=None, image_mask=None):
-        height, width = x.shape[-2:]
+    def forward(
+        self,
+        x: Tensor,
+        time_embed: Tensor,
+        context: Optional[Tensor] = None,
+        context_mask: Optional[Tensor] = None,
+        image_mask: Optional[Tensor] = None,
+    ):
+        height, width = ops.size()(x)[1:2]
         out = self.in_norm(x, time_embed)
-        out = out.reshape(x.shape[0], -1, height * width).permute(0, 2, 1)
+        out = ops.reshape()(out, [ops.size()(x, dim=0), height * width, -1])
         context = context if context is not None else out
         if context_mask is not None:
-            context_mask = context_mask.to(dtype=context.dtype)
+            context_mask = ops.cast()(context_mask, dtype=context.dtype())
 
         out = self.attention(out, context, context_mask)
-        out = (
-            out.permute(0, 2, 1).unsqueeze(-1).reshape(out.shape[0], -1, height, width)
+        out = ops.reshape()(
+            ops.unsqueeze(-1)(out), [ops.size()(out, dim=0), height, width, -1]
         )
         x = x + out
 
