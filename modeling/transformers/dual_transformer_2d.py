@@ -124,9 +124,11 @@ class DualTransformer2DModel(nn.Module):
         # attention_mask is not used yet
         for i in range(2):
             # for each of the two transformers, pass the corresponding condition tokens
-            condition_state = encoder_hidden_states[
-                :, tokens_start : tokens_start + self.condition_lengths[i]
-            ]
+            condition_state = ops.dynamic_slice()(
+                encoder_hidden_states,
+                start_indices=[0, tokens_start],
+                end_indices=[None, tokens_start + self.condition_lengths[i]],
+            )
             transformer_index = self.transformer_index_for_condition[i]
             encoded_state = self.transformers[transformer_index](
                 input_states,
