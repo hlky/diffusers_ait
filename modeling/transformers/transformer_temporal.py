@@ -70,6 +70,7 @@ class TransformerTemporalModel(nn.Module):
         double_self_attention: bool = True,
         positional_embeddings: Optional[str] = None,
         num_positional_embeddings: Optional[int] = None,
+        dtype: str = "float16",
     ):
         super().__init__()
         self.num_attention_heads = num_attention_heads
@@ -79,9 +80,13 @@ class TransformerTemporalModel(nn.Module):
         self.in_channels = in_channels
 
         self.norm = nn.GroupNorm(
-            num_groups=norm_num_groups, num_channels=in_channels, eps=1e-6, affine=True
+            num_groups=norm_num_groups,
+            num_channels=in_channels,
+            eps=1e-6,
+            affine=True,
+            dtype=dtype,
         )
-        self.proj_in = nn.Linear(in_channels, inner_dim)
+        self.proj_in = nn.Linear(in_channels, inner_dim, dtype=dtype)
 
         # 3. Define transformers blocks
         self.transformer_blocks = nn.ModuleList(
@@ -98,12 +103,13 @@ class TransformerTemporalModel(nn.Module):
                     norm_elementwise_affine=norm_elementwise_affine,
                     positional_embeddings=positional_embeddings,
                     num_positional_embeddings=num_positional_embeddings,
+                    dtype=dtype,
                 )
                 for d in range(num_layers)
             ]
         )
 
-        self.proj_out = nn.Linear(inner_dim, in_channels)
+        self.proj_out = nn.Linear(inner_dim, in_channels, dtype=dtype)
 
     def forward(
         self,
@@ -119,7 +125,7 @@ class TransformerTemporalModel(nn.Module):
         The [`TransformerTemporal`] forward method.
 
         Args:
-            hidden_states (`Tensor` of shape `(batch size, num latent pixels)` if discrete, `Tensor` of shape `(batch size, channel, height, width)` if continuous):
+            hidden_states (`Tensor` of shape `(batch size, num latent pixels)` if discrete, `Tensor` of shape `(batch size, height, width, channel)` if continuous):
                 Input hidden_states.
             encoder_hidden_states ( `Tensor` of shape `(batch size, encoder_hidden_states dim)`, *optional*):
                 Conditional embeddings for cross attention layer. If not given, cross-attention defaults to
@@ -146,19 +152,20 @@ class TransformerTemporalModel(nn.Module):
                 `tuple` where the first element is the sample tensor.
         """
         # 1. Input
-        batch_frames, channel, height, width = hidden_states.shape
-        batch_size = batch_frames // num_frames
+        batch_frames, height, width, channel = ops.size()(hidden_states)
+        batch_size = batch_frames / num_frames
 
         residual = hidden_states
 
-        hidden_states = hidden_states[None, :].reshape(
-            batch_size, num_frames, channel, height, width
+        hidden_states = ops.reshape()(
+            ops.unsqueeze(0)(hidden_states),
+            [batch_size, num_frames, height, width, channel],
         )
-        hidden_states = hidden_states.permute(0, 2, 1, 3, 4)
 
         hidden_states = self.norm(hidden_states)
-        hidden_states = hidden_states.permute(0, 3, 4, 2, 1).reshape(
-            batch_size * height * width, num_frames, channel
+        hidden_states = ops.reshape()(
+            ops.permute()(hidden_states, [0, 2, 3, 1, 4]),
+            [batch_size * height * width, num_frames, channel],
         )
 
         hidden_states = self.proj_in(hidden_states)
@@ -175,13 +182,16 @@ class TransformerTemporalModel(nn.Module):
 
         # 3. Output
         hidden_states = self.proj_out(hidden_states)
-        hidden_states = (
-            hidden_states[None, None, :]
-            .reshape(batch_size, height, width, num_frames, channel)
-            .permute(0, 3, 4, 1, 2)
-            .contiguous()
+        hidden_states = ops.permute()(
+            ops.reshape()(
+                ops.unsqueeze(0)(ops.unsqueeze(0)(hidden_states)),
+                [batch_size, height, width, num_frames, channel],
+            ),
+            [0, 3, 1, 2, 4],
         )
-        hidden_states = hidden_states.reshape(batch_frames, channel, height, width)
+        hidden_states = ops.reshape()(
+            hidden_states, [batch_frames, height, width, channel]
+        )
 
         output = hidden_states + residual
 
