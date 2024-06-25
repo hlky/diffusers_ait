@@ -17,7 +17,7 @@ class UNet2DOutput(BaseOutput):
     The output of [`UNet2DModel`].
 
     Args:
-        sample (`Tensor` of shape `(batch_size, num_channels, height, width)`):
+        sample (`Tensor` of shape `(batch_size, height, width, num_channels)`):
             The hidden states output from the last layer of the model.
     """
 
@@ -114,12 +114,17 @@ class UNet2DModel(nn.Module):
         class_embed_type: Optional[str] = None,
         num_class_embeds: Optional[int] = None,
         num_train_timesteps: Optional[int] = None,
+        dtype: str = "float16",
     ):
         super().__init__()
 
         self.sample_size = sample_size
+        self.center_input_sample = center_input_sample
+        self.dtype = dtype
+        self.time_embedding_type = time_embedding_type
         time_embed_dim = block_out_channels[0] * 4
 
+        self.time_embed_dim = time_embed_dim
         # Check inputs
         if len(down_block_types) != len(up_block_types):
             raise ValueError(
@@ -132,34 +137,46 @@ class UNet2DModel(nn.Module):
             )
 
         # input
-        self.conv_in = nn.Conv2d(
-            in_channels, block_out_channels[0], kernel_size=3, padding=(1, 1)
+        self.conv_in = nn.Conv2dBias(
+            in_channels,
+            block_out_channels[0],
+            kernel_size=3,
+            padding=(1, 1),
+            dtype=dtype,
         )
 
         # time
         if time_embedding_type == "fourier":
             self.time_proj = GaussianFourierProjection(
-                embedding_size=block_out_channels[0], scale=16
+                embedding_size=block_out_channels[0], scale=16, dtype=dtype
             )
             timestep_input_dim = 2 * block_out_channels[0]
         elif time_embedding_type == "positional":
             self.time_proj = Timesteps(
-                block_out_channels[0], flip_sin_to_cos, freq_shift
+                block_out_channels[0], flip_sin_to_cos, freq_shift, dtype=dtype
             )
             timestep_input_dim = block_out_channels[0]
         elif time_embedding_type == "learned":
-            self.time_proj = nn.Embedding(num_train_timesteps, block_out_channels[0])
+            self.time_proj = nn.Embedding(
+                [num_train_timesteps, block_out_channels[0]], dtype=dtype
+            )
             timestep_input_dim = block_out_channels[0]
 
-        self.time_embedding = TimestepEmbedding(timestep_input_dim, time_embed_dim)
+        self.time_embedding = TimestepEmbedding(
+            timestep_input_dim, time_embed_dim, dtype=dtype
+        )
 
         # class embedding
         if class_embed_type is None and num_class_embeds is not None:
-            self.class_embedding = nn.Embedding(num_class_embeds, time_embed_dim)
+            self.class_embedding = nn.Embedding(
+                [num_class_embeds, time_embed_dim], dtype=dtype
+            )
         elif class_embed_type == "timestep":
-            self.class_embedding = TimestepEmbedding(timestep_input_dim, time_embed_dim)
+            self.class_embedding = TimestepEmbedding(
+                timestep_input_dim, time_embed_dim, dtype=dtype
+            )
         elif class_embed_type == "identity":
-            self.class_embedding = nn.Identity(time_embed_dim, time_embed_dim)
+            self.class_embedding = nn.Identity()
         else:
             self.class_embedding = None
 
@@ -193,6 +210,7 @@ class UNet2DModel(nn.Module):
                 resnet_time_scale_shift=resnet_time_scale_shift,
                 downsample_type=downsample_type,
                 dropout=dropout,
+                dtype=dtype,
             )
             self.down_blocks.append(down_block)
 
@@ -213,6 +231,7 @@ class UNet2DModel(nn.Module):
             resnet_groups=norm_num_groups,
             attn_groups=attn_norm_num_groups,
             add_attention=add_attention,
+            dtype=dtype,
         )
 
         # up
@@ -246,6 +265,7 @@ class UNet2DModel(nn.Module):
                 resnet_time_scale_shift=resnet_time_scale_shift,
                 upsample_type=upsample_type,
                 dropout=dropout,
+                dtype=dtype,
             )
             self.up_blocks.append(up_block)
             prev_output_channel = output_channel
@@ -257,11 +277,14 @@ class UNet2DModel(nn.Module):
             else min(block_out_channels[0] // 4, 32)
         )
         self.conv_norm_out = nn.GroupNorm(
-            num_channels=block_out_channels[0], num_groups=num_groups_out, eps=norm_eps
+            num_channels=block_out_channels[0],
+            num_groups=num_groups_out,
+            eps=norm_eps,
+            dtype=dtype,
         )
-        self.conv_act = nn.SiLU()
-        self.conv_out = nn.Conv2d(
-            block_out_channels[0], out_channels, kernel_size=3, padding=1
+        self.conv_act = ops.silu
+        self.conv_out = nn.Conv2dBias(
+            block_out_channels[0], out_channels, kernel_size=3, padding=1, dtype=dtype
         )
 
     def forward(
@@ -288,18 +311,17 @@ class UNet2DModel(nn.Module):
                 If `return_dict` is True, an [`~models.unets.unet_2d.UNet2DOutput`] is returned, otherwise a `tuple` is
                 returned where the first element is the sample tensor.
         """
+        batch_size = ops.size()(sample, dim=0)
         # 0. center input if necessary
-        if self.config.center_input_sample:
+        if self.center_input_sample:
             sample = 2 * sample - 1.0
 
         # 1. time
         timesteps = timestep
-        if len(timesteps.shape) == 0:
-            timesteps = timesteps[None].to(sample.device)
 
         # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
-        timesteps = timesteps * torch.ones(
-            sample.shape[0], dtype=timesteps.dtype, device=timesteps.device
+        timesteps = timesteps * ops.full()(
+            [batch_size], fill_value=1.0, dtype=timesteps.dtype()
         )
 
         t_emb = self.time_proj(timesteps)
@@ -307,7 +329,7 @@ class UNet2DModel(nn.Module):
         # timesteps does not contain any weights and will always return f32 tensors
         # but time_embedding might actually be running in fp16. so we need to cast here.
         # there might be better ways to encapsulate this.
-        t_emb = t_emb.to(dtype=self.dtype)
+        t_emb = ops.cast()(t_emb, dtype=self.dtype)
         emb = self.time_embedding(t_emb)
 
         if self.class_embedding is not None:
@@ -316,10 +338,10 @@ class UNet2DModel(nn.Module):
                     "class_labels should be provided when doing class conditioning"
                 )
 
-            if self.config.class_embed_type == "timestep":
+            if self.class_embed_type == "timestep":
                 class_labels = self.time_proj(class_labels)
 
-            class_emb = self.class_embedding(class_labels).to(dtype=self.dtype)
+            class_emb = ops.cast()(self.class_embedding(class_labels), dtype=self.dtype)
             emb = emb + class_emb
         elif self.class_embedding is None and class_labels is not None:
             raise ValueError(
@@ -368,10 +390,10 @@ class UNet2DModel(nn.Module):
         if skip_sample is not None:
             sample += skip_sample
 
-        if self.config.time_embedding_type == "fourier":
-            timesteps = timesteps.reshape(
-                (sample.shape[0], *([1] * len(sample.shape[1:])))
-            )
+        if self.time_embedding_type == "fourier":
+            shape = [batch_size]
+            shape.extend([1] * len(ops.size()(sample)[1:]))
+            timesteps = ops.reshape()(timesteps, shape=shape)
             sample = sample / timesteps
 
         if not return_dict:
