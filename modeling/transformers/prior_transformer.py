@@ -7,13 +7,7 @@ from aitemplate.frontend import nn, Tensor
 
 from ...utils import BaseOutput
 from ..attention import BasicTransformerBlock
-from ..attention_processor import (
-    ADDED_KV_ATTENTION_PROCESSORS,
-    AttentionProcessor,
-    AttnAddedKVProcessor,
-    AttnProcessor,
-    CROSS_ATTENTION_PROCESSORS,
-)
+from ..attention_processor import AttentionProcessor
 from ..embeddings import TimestepEmbedding, Timesteps
 
 
@@ -84,6 +78,7 @@ class PriorTransformer(nn.Module):
         time_embed_dim: Optional[int] = None,
         embedding_proj_dim: Optional[int] = None,
         clip_embed_dim: Optional[int] = None,
+        dtype: str = "float16",
     ):
         super().__init__()
         self.num_attention_heads = num_attention_heads
@@ -95,39 +90,45 @@ class PriorTransformer(nn.Module):
         embedding_proj_dim = embedding_proj_dim or embedding_dim
         clip_embed_dim = clip_embed_dim or embedding_dim
 
-        self.time_proj = Timesteps(inner_dim, True, 0)
+        self.time_proj = Timesteps(inner_dim, True, 0, dtype=dtype)
         self.time_embedding = TimestepEmbedding(
-            inner_dim, time_embed_dim, out_dim=inner_dim, act_fn=time_embed_act_fn
+            inner_dim,
+            time_embed_dim,
+            out_dim=inner_dim,
+            act_fn=time_embed_act_fn,
+            dtype=dtype,
         )
 
-        self.proj_in = nn.Linear(embedding_dim, inner_dim)
+        self.proj_in = nn.Linear(embedding_dim, inner_dim, dtype=dtype)
 
         if embedding_proj_norm_type is None:
             self.embedding_proj_norm = None
         elif embedding_proj_norm_type == "layer":
-            self.embedding_proj_norm = nn.LayerNorm(embedding_proj_dim)
+            self.embedding_proj_norm = nn.LayerNorm(embedding_proj_dim, dtype=dtype)
         else:
             raise ValueError(
                 f"unsupported embedding_proj_norm_type: {embedding_proj_norm_type}"
             )
 
-        self.embedding_proj = nn.Linear(embedding_proj_dim, inner_dim)
+        self.embedding_proj = nn.Linear(embedding_proj_dim, inner_dim, dtype=dtype)
 
         if encoder_hid_proj_type is None:
             self.encoder_hidden_states_proj = None
         elif encoder_hid_proj_type == "linear":
-            self.encoder_hidden_states_proj = nn.Linear(embedding_dim, inner_dim)
+            self.encoder_hidden_states_proj = nn.Linear(
+                embedding_dim, inner_dim, dtype=dtype
+            )
         else:
             raise ValueError(
                 f"unsupported encoder_hid_proj_type: {encoder_hid_proj_type}"
             )
 
         self.positional_embedding = nn.Parameter(
-            torch.zeros(1, num_embeddings + additional_embeddings, inner_dim)
+            [1, num_embeddings + additional_embeddings, inner_dim], dtype=dtype
         )
 
         if added_emb_type == "prd":
-            self.prd_embedding = nn.Parameter(torch.zeros(1, 1, inner_dim))
+            self.prd_embedding = nn.Parameter([1, 1, inner_dim], dtype=dtype)
         elif added_emb_type is None:
             self.prd_embedding = None
         else:
@@ -144,37 +145,44 @@ class PriorTransformer(nn.Module):
                     dropout=dropout,
                     activation_fn="gelu",
                     attention_bias=True,
+                    dtype=dtype,
                 )
                 for d in range(num_layers)
             ]
         )
 
         if norm_in_type == "layer":
-            self.norm_in = nn.LayerNorm(inner_dim)
+            self.norm_in = nn.LayerNorm(inner_dim, dtype=dtype)
         elif norm_in_type is None:
             self.norm_in = None
         else:
             raise ValueError(f"Unsupported norm_in_type: {norm_in_type}.")
 
-        self.norm_out = nn.LayerNorm(inner_dim)
+        self.norm_out = nn.LayerNorm(inner_dim, dtype=dtype)
 
-        self.proj_to_clip_embeddings = nn.Linear(inner_dim, clip_embed_dim)
+        self.proj_to_clip_embeddings = nn.Linear(inner_dim, clip_embed_dim, dtype=dtype)
 
-        causal_attention_mask = torch.full(
+        # causal_attention_mask = torch.full(
+        #     [
+        #         num_embeddings + additional_embeddings,
+        #         num_embeddings + additional_embeddings,
+        #     ],
+        #     -10000.0,
+        # )
+        # causal_attention_mask.triu_(1)
+        # causal_attention_mask = causal_attention_mask[None, ...]
+        self.causal_attention_mask = Tensor(
             [
+                1,
                 num_embeddings + additional_embeddings,
                 num_embeddings + additional_embeddings,
             ],
-            -10000.0,
-        )
-        causal_attention_mask.triu_(1)
-        causal_attention_mask = causal_attention_mask[None, ...]
-        self.register_buffer(
-            "causal_attention_mask", causal_attention_mask, persistent=False
+            name="causal_attention_mask",
+            dtype=dtype,
         )
 
-        self.clip_mean = nn.Parameter(torch.zeros(1, clip_embed_dim))
-        self.clip_std = nn.Parameter(torch.zeros(1, clip_embed_dim))
+        self.clip_mean = nn.Parameter([1, clip_embed_dim], dtype=dtype)
+        self.clip_std = nn.Parameter([1, clip_embed_dim], dtype=dtype)
 
     # Copied from diffusers.models.unets.unet_2d_condition.UNet2DConditionModel.set_attn_processor
     def set_attn_processor(
@@ -215,7 +223,7 @@ class PriorTransformer(nn.Module):
 
     def forward(
         self,
-        hidden_states,
+        hidden_states: Tensor,
         timestep: Union[Tensor, float, int],
         proj_embedding: Tensor,
         encoder_hidden_states: Optional[Tensor] = None,
@@ -245,26 +253,20 @@ class PriorTransformer(nn.Module):
                 If return_dict is True, a [`~models.transformers.prior_transformer.PriorTransformerOutput`] is
                 returned, otherwise a tuple is returned where the first element is the sample tensor.
         """
-        batch_size = hidden_states.shape[0]
+        batch_size = ops.size()(hidden_states, dim=0)
 
         timesteps = timestep
-        if not torch.is_tensor(timesteps):
-            timesteps = torch.tensor(
-                [timesteps], dtype=torch.long, device=hidden_states.device
-            )
-        elif torch.is_tensor(timesteps) and len(timesteps.shape) == 0:
-            timesteps = timesteps[None].to(hidden_states.device)
 
         # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
-        timesteps = timesteps * torch.ones(
-            batch_size, dtype=timesteps.dtype, device=timesteps.device
+        timesteps = timesteps * ops.full()(
+            [batch_size], fill_value=1.0, dtype=timesteps.dtype()
         )
 
         timesteps_projected = self.time_proj(timesteps)
 
         # timesteps does not contain any weights and will always return f32 tensors
         # but time_embedding might be fp16, so we need to cast here.
-        timesteps_projected = timesteps_projected.to(dtype=self.dtype)
+        timesteps_projected = ops.cast()(timesteps_projected, dtype=self.dtype)
         time_embeddings = self.time_embedding(timesteps_projected)
 
         if self.embedding_proj_norm is not None:
@@ -288,61 +290,72 @@ class PriorTransformer(nn.Module):
 
         hidden_states = self.proj_in(hidden_states)
 
-        positional_embeddings = self.positional_embedding.to(hidden_states.dtype)
+        positional_embeddings = ops.cast()(
+            self.positional_embedding.tensor(), dtype=hidden_states.dtype()
+        )
 
         additional_embeds = []
         additional_embeddings_len = 0
 
         if encoder_hidden_states is not None:
             additional_embeds.append(encoder_hidden_states)
-            additional_embeddings_len += encoder_hidden_states.shape[1]
+            additional_embeddings_len += ops.size()(encoder_hidden_states, dim=1)
 
-        if len(proj_embeddings.shape) == 2:
-            proj_embeddings = proj_embeddings[:, None, :]
+        if len(ops.size()(proj_embeddings)) == 2:
+            proj_embeddings = ops.unsqueeze(1)(proj_embeddings)
 
-        if len(hidden_states.shape) == 2:
-            hidden_states = hidden_states[:, None, :]
+        if len(ops.size()(hidden_states)) == 2:
+            hidden_states = ops.unsqueeze(1)(hidden_states)
 
         additional_embeds = additional_embeds + [
             proj_embeddings,
-            time_embeddings[:, None, :],
+            ops.unsqueeze(1)(time_embeddings),
             hidden_states,
         ]
 
         if self.prd_embedding is not None:
-            prd_embedding = self.prd_embedding.to(hidden_states.dtype).expand(
-                batch_size, -1, -1
+            prd_embedding = ops.expand()(
+                ops.cast()(self.prd_embedding.tensor(), dtype=hidden_states.dtype()),
+                [batch_size, -1, -1],
             )
             additional_embeds.append(prd_embedding)
 
-        hidden_states = torch.cat(
+        hidden_states = ops.concatenate()(
             additional_embeds,
             dim=1,
         )
 
         # Allow positional_embedding to not include the `addtional_embeddings` and instead pad it with zeros for these additional tokens
         additional_embeddings_len = (
-            additional_embeddings_len + proj_embeddings.shape[1] + 1
+            additional_embeddings_len + ops.size()(proj_embeddings, dim=1) + 1
         )
-        if positional_embeddings.shape[1] < hidden_states.shape[1]:
-            positional_embeddings = F.pad(
-                positional_embeddings,
-                (
-                    0,
-                    0,
-                    additional_embeddings_len,
-                    (
-                        self.prd_embedding.shape[1]
-                        if self.prd_embedding is not None
-                        else 0
-                    ),
-                ),
-                value=0.0,
+        if ops.size()(positional_embeddings, dim=1) < ops.size()(hidden_states, dim=1):
+            padding = ops.full()(
+                [0, additional_embeddings_len, 0, 0], 0.0, dtype=self.dtype
             )
+            padding._attrs["shape"][0] = positional_embeddings._attrs["shape"][0]
+            padding._attrs["shape"][2] = positional_embeddings._attrs["shape"][2]
+            padding._attrs["shape"][3] = positional_embeddings._attrs["shape"][3]
+            positional_embeddings = ops.concatenate()(
+                [positional_embeddings, padding], dim=1
+            )
+            if self.prd_embedding is not None:
+                padding = ops.full()(
+                    [0, 0, ops.size()(self.prd_embedding.tensor(), dim=1), 0],
+                    0.0,
+                    dtype=self.dtype,
+                )
+                padding._attrs["shape"][0] = positional_embeddings._attrs["shape"][0]
+                padding._attrs["shape"][1] = positional_embeddings._attrs["shape"][1]
+                padding._attrs["shape"][3] = positional_embeddings._attrs["shape"][3]
+                positional_embeddings = ops.concatenate()(
+                    [positional_embeddings, padding], dim=2
+                )
 
         hidden_states = hidden_states + positional_embeddings
 
         if attention_mask is not None:
+            raise NotImplementedError("repeat_interleave")
             attention_mask = (1 - attention_mask.to(hidden_states.dtype)) * -10000.0
             attention_mask = F.pad(
                 attention_mask, (0, self.additional_embeddings), value=0.0
@@ -351,7 +364,7 @@ class PriorTransformer(nn.Module):
                 attention_mask[:, None, :] + self.causal_attention_mask
             ).to(hidden_states.dtype)
             attention_mask = attention_mask.repeat_interleave(
-                self.config.num_attention_heads, dim=0
+                self.num_attention_heads, dim=0
             )
 
         if self.norm_in is not None:
@@ -363,9 +376,15 @@ class PriorTransformer(nn.Module):
         hidden_states = self.norm_out(hidden_states)
 
         if self.prd_embedding is not None:
-            hidden_states = hidden_states[:, -1]
+            hidden_states = ops.dynamic_slice()(
+                hidden_states, start_indices=[0, -1], end_indices=[None, None]
+            )
         else:
-            hidden_states = hidden_states[:, additional_embeddings_len:]
+            hidden_states = ops.dynamic_slice()(
+                hidden_states,
+                start_indices=[0, additional_embeddings_len],
+                end_indices=[None, None],
+            )
 
         predicted_image_embedding = self.proj_to_clip_embeddings(hidden_states)
 
