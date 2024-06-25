@@ -1,3 +1,6 @@
+# TODO: sync attention_processor for HunyuanAttnProcessor2_0
+# TODO: sync embeddings for HunyuanCombinedTimestepTextSizeStyleEmbedding
+
 from typing import Dict, Optional, Union
 
 from aitemplate.compiler import ops
@@ -18,14 +21,17 @@ from ..normalization import AdaLayerNormContinuous
 
 class FP32LayerNorm(nn.LayerNorm):
     def forward(self, inputs: Tensor) -> Tensor:
-        origin_dtype = inputs.dtype
-        return F.layer_norm(
-            inputs.float(),
-            self.normalized_shape,
-            self.weight.float(),
-            self.bias.float(),
-            self.eps,
-        ).to(origin_dtype)
+        origin_dtype = inputs.dtype()
+        return ops.cast()(
+            ops.layernorm()(
+                ops.cast()(inputs, dtype="float32"),
+                ops.cast()(self.weight.tensor(), dtype="float32"),
+                ops.cast()(self.bias.tensor(), dtype="float32"),
+                self.dim,
+                self.eps,
+            ),
+            dtype=origin_dtype,
+        )
 
 
 class AdaLayerNormShift(nn.Module):
@@ -37,17 +43,25 @@ class AdaLayerNormShift(nn.Module):
         num_embeddings (`int`): The size of the embeddings dictionary.
     """
 
-    def __init__(self, embedding_dim: int, elementwise_affine=True, eps=1e-6):
+    def __init__(
+        self,
+        embedding_dim: int,
+        elementwise_affine=True,
+        eps=1e-6,
+        dtype: str = "float16",
+    ):
         super().__init__()
-        self.silu = nn.SiLU()
-        self.linear = nn.Linear(embedding_dim, embedding_dim)
+        self.silu = ops.silu
+        self.linear = nn.Linear(embedding_dim, embedding_dim, dtype=dtype)
         self.norm = FP32LayerNorm(
             embedding_dim, elementwise_affine=elementwise_affine, eps=eps
         )
 
     def forward(self, x: Tensor, emb: Tensor) -> Tensor:
-        shift = self.linear(self.silu(emb.to(torch.float32)).to(emb.dtype))
-        x = self.norm(x) + shift.unsqueeze(dim=1)
+        shift = self.linear(
+            ops.cast()(self.silu(ops.cast()(emb, dtype="float32"))), emb.dtype()
+        )
+        x = self.norm(x) + ops.unsqueeze(1)(shift)
         return x
 
 
@@ -97,6 +111,7 @@ class HunyuanDiTBlock(nn.Module):
         ff_bias: bool = True,
         skip: bool = False,
         qk_norm: bool = True,
+        dtype: str = "float16",
     ):
         super().__init__()
 
@@ -104,7 +119,7 @@ class HunyuanDiTBlock(nn.Module):
         # NOTE: when new version comes, check norm2 and norm 3
         # 1. Self-Attn
         self.norm1 = AdaLayerNormShift(
-            dim, elementwise_affine=norm_elementwise_affine, eps=norm_eps
+            dim, elementwise_affine=norm_elementwise_affine, eps=norm_eps, dtype=dtype
         )
 
         self.attn1 = Attention(
@@ -116,6 +131,7 @@ class HunyuanDiTBlock(nn.Module):
             eps=1e-6,
             bias=True,
             processor=HunyuanAttnProcessor2_0(),
+            dtype=dtype,
         )
 
         # 2. Cross-Attn
@@ -130,6 +146,7 @@ class HunyuanDiTBlock(nn.Module):
             eps=1e-6,
             bias=True,
             processor=HunyuanAttnProcessor2_0(),
+            dtype=dtype,
         )
         # 3. Feed-forward
         self.norm3 = FP32LayerNorm(dim, norm_eps, norm_elementwise_affine)
@@ -141,12 +158,13 @@ class HunyuanDiTBlock(nn.Module):
             final_dropout=final_dropout,  ### 0.0
             inner_dim=ff_inner_dim,  ### int(dim * mlp_ratio)
             bias=ff_bias,
+            dtype=dtype,
         )
 
         # 4. Skip Connection
         if skip:
             self.skip_norm = FP32LayerNorm(2 * dim, norm_eps, elementwise_affine=True)
-            self.skip_linear = nn.Linear(2 * dim, dim)
+            self.skip_linear = nn.Linear(2 * dim, dim, dtype=dtype)
         else:
             self.skip_linear = None
 
@@ -171,7 +189,7 @@ class HunyuanDiTBlock(nn.Module):
         # Notice that normalization is always applied before the real computation in the following blocks.
         # 0. Long Skip Connection
         if self.skip_linear is not None:
-            cat = torch.cat([hidden_states, skip], dim=-1)
+            cat = ops.concatenate()([hidden_states, skip], dim=-1)
             cat = self.skip_norm(cat)
             hidden_states = self.skip_linear(cat)
 
@@ -259,6 +277,7 @@ class HunyuanDiT2DModel(nn.Module):
         pooled_projection_dim: int = 1024,
         text_len: int = 77,
         text_len_t5: int = 256,
+        dtype: str = "float16",
     ):
         super().__init__()
         self.out_channels = in_channels * 2 if learn_sigma else in_channels
@@ -270,12 +289,11 @@ class HunyuanDiT2DModel(nn.Module):
             hidden_size=cross_attention_dim_t5 * 4,
             out_features=cross_attention_dim,
             act_fn="silu_fp32",
+            dtype=dtype,
         )
 
         self.text_embedding_padding = nn.Parameter(
-            torch.randn(
-                text_len + text_len_t5, cross_attention_dim, dtype=torch.float32
-            )
+            [text_len + text_len_t5, cross_attention_dim], dtype=dtype
         )
 
         self.pos_embed = PatchEmbed(
@@ -285,6 +303,7 @@ class HunyuanDiT2DModel(nn.Module):
             embed_dim=hidden_size,
             patch_size=patch_size,
             pos_embed_type=None,
+            dtype=dtype,
         )
 
         self.time_extra_emb = HunyuanCombinedTimestepTextSizeStyleEmbedding(
@@ -292,6 +311,7 @@ class HunyuanDiT2DModel(nn.Module):
             pooled_projection_dim=pooled_projection_dim,
             seq_len=text_len_t5,
             cross_attention_dim=cross_attention_dim_t5,
+            dtype=dtype,
         )
 
         # HunyuanDiT Blocks
@@ -305,16 +325,24 @@ class HunyuanDiT2DModel(nn.Module):
                     cross_attention_dim=cross_attention_dim,
                     qk_norm=True,  # See http://arxiv.org/abs/2302.05442 for details.
                     skip=layer > num_layers // 2,
+                    dtype=dtype,
                 )
                 for layer in range(num_layers)
             ]
         )
 
         self.norm_out = AdaLayerNormContinuous(
-            self.inner_dim, self.inner_dim, elementwise_affine=False, eps=1e-6
+            self.inner_dim,
+            self.inner_dim,
+            elementwise_affine=False,
+            eps=1e-6,
+            dtype=dtype,
         )
         self.proj_out = nn.Linear(
-            self.inner_dim, patch_size * patch_size * self.out_channels, bias=True
+            self.inner_dim,
+            patch_size * patch_size * self.out_channels,
+            bias=True,
+            dtype=dtype,
         )
 
     # Copied from diffusers.models.unets.unet_2d_condition.UNet2DConditionModel.set_attn_processor
@@ -356,22 +384,22 @@ class HunyuanDiT2DModel(nn.Module):
 
     def forward(
         self,
-        hidden_states,
-        timestep,
-        encoder_hidden_states=None,
-        text_embedding_mask=None,
-        encoder_hidden_states_t5=None,
-        text_embedding_mask_t5=None,
-        image_meta_size=None,
-        style=None,
-        image_rotary_emb=None,
-        return_dict=True,
+        hidden_states: Tensor,
+        timestep: Tensor,
+        encoder_hidden_states: Optional[Tensor] = None,
+        text_embedding_mask: Optional[Tensor] = None,
+        encoder_hidden_states_t5: Optional[Tensor] = None,
+        text_embedding_mask_t5: Optional[Tensor] = None,
+        image_meta_size: Optional[Tensor] = None,
+        style: Optional[Tensor] = None,
+        image_rotary_emb: Optional[Tensor] = None,
+        return_dict: bool = True,
     ):
         """
         The [`HunyuanDiT2DModel`] forward method.
 
         Args:
-        hidden_states (`Tensor` of shape `(batch size, dim, height, width)`):
+        hidden_states (`Tensor` of shape `(batch size, height, width, dim)`):
             The input tensor.
         timestep ( `Tensor`, *optional*):
             Used to indicate denoising step.
@@ -395,7 +423,7 @@ class HunyuanDiT2DModel(nn.Module):
             Whether to return a dictionary.
         """
 
-        height, width = hidden_states.shape[-2:]
+        height, width = ops.size()(hidden_states)[1:2]
 
         hidden_states = self.pos_embed(hidden_states)
 
@@ -404,28 +432,35 @@ class HunyuanDiT2DModel(nn.Module):
             encoder_hidden_states_t5,
             image_meta_size,
             style,
-            hidden_dtype=timestep.dtype,
+            hidden_dtype=timestep.dtype(),
         )  # [B, D]
 
         # text projection
-        batch_size, sequence_length, _ = encoder_hidden_states_t5.shape
+        batch_size, sequence_length, _ = ops.size()(encoder_hidden_states_t5)
         encoder_hidden_states_t5 = self.text_embedder(
-            encoder_hidden_states_t5.view(-1, encoder_hidden_states_t5.shape[-1])
+            ops.reshape()(
+                encoder_hidden_states_t5,
+                [-1, ops.size()(encoder_hidden_states_t5, dim=-1)],
+            )
         )
-        encoder_hidden_states_t5 = encoder_hidden_states_t5.view(
-            batch_size, sequence_length, -1
+        encoder_hidden_states_t5 = ops.reshape()(
+            encoder_hidden_states_t5, [batch_size, sequence_length, -1]
         )
 
-        encoder_hidden_states = torch.cat(
+        encoder_hidden_states = ops.concatenate()(
             [encoder_hidden_states, encoder_hidden_states_t5], dim=1
         )
-        text_embedding_mask = torch.cat(
+        text_embedding_mask = ops.concatenate()(
             [text_embedding_mask, text_embedding_mask_t5], dim=-1
         )
-        text_embedding_mask = text_embedding_mask.unsqueeze(2).bool()
+        text_embedding_mask = ops.cast()(
+            ops.unsqueeze(2)(text_embedding_mask), dtype="bool"
+        )
 
-        encoder_hidden_states = torch.where(
-            text_embedding_mask, encoder_hidden_states, self.text_embedding_padding
+        encoder_hidden_states = ops.where()(
+            text_embedding_mask,
+            encoder_hidden_states,
+            self.text_embedding_padding.tensor(),
         )
 
         skips = []
@@ -451,7 +486,7 @@ class HunyuanDiT2DModel(nn.Module):
                 skips.append(hidden_states)
 
         # final layer
-        hidden_states = self.norm_out(hidden_states, temb.to(torch.float32))
+        hidden_states = self.norm_out(hidden_states, ops.cast()(temb, dtype="float32"))
         hidden_states = self.proj_out(hidden_states)
         # (N, L, patch_size ** 2 * out_channels)
 
@@ -460,69 +495,24 @@ class HunyuanDiT2DModel(nn.Module):
         height = height // patch_size
         width = width // patch_size
 
-        hidden_states = hidden_states.reshape(
-            shape=(
-                hidden_states.shape[0],
+        hidden_states = ops.reshape()(
+            hidden_states,
+            [
+                -1,
                 height,
                 width,
                 patch_size,
                 patch_size,
                 self.out_channels,
-            )
+            ],
         )
-        hidden_states = torch.einsum("nhwpqc->nchpwq", hidden_states)
-        output = hidden_states.reshape(
-            shape=(
-                hidden_states.shape[0],
-                self.out_channels,
-                height * patch_size,
-                width * patch_size,
-            )
+        hidden_states = ops.permute()(
+            hidden_states, [0, 1, 3, 2, 4, 5]
+        )  # torch: nhwpqc->nchpwq
+        output = ops.reshape()(
+            hidden_states,
+            [-1, height * self.patch_size, width * self.patch_size, self.out_channels],
         )
         if not return_dict:
             return (output,)
         return Transformer2DModelOutput(sample=output)
-
-    # Copied from diffusers.models.unets.unet_3d_condition.UNet3DConditionModel.enable_forward_chunking
-    def enable_forward_chunking(
-        self, chunk_size: Optional[int] = None, dim: int = 0
-    ) -> None:
-        """
-        Sets the attention processor to use [feed forward
-        chunking](https://huggingface.co/blog/reformer#2-chunked-feed-forward-layers).
-
-        Parameters:
-            chunk_size (`int`, *optional*):
-                The chunk size of the feed-forward layers. If not specified, will run feed-forward layer individually
-                over each tensor of dim=`dim`.
-            dim (`int`, *optional*, defaults to `0`):
-                The dimension over which the feed-forward computation should be chunked. Choose between dim=0 (batch)
-                or dim=1 (sequence length).
-        """
-        if dim not in [0, 1]:
-            raise ValueError(f"Make sure to set `dim` to either 0 or 1, not {dim}")
-
-        # By default chunk size is 1
-        chunk_size = chunk_size or 1
-
-        def fn_recursive_feed_forward(module: nn.Module, chunk_size: int, dim: int):
-            if hasattr(module, "set_chunk_feed_forward"):
-                module.set_chunk_feed_forward(chunk_size=chunk_size, dim=dim)
-
-            for child in module.children():
-                fn_recursive_feed_forward(child, chunk_size, dim)
-
-        for module in self.children():
-            fn_recursive_feed_forward(module, chunk_size, dim)
-
-    # Copied from diffusers.models.unets.unet_3d_condition.UNet3DConditionModel.disable_forward_chunking
-    def disable_forward_chunking(self):
-        def fn_recursive_feed_forward(module: nn.Module, chunk_size: int, dim: int):
-            if hasattr(module, "set_chunk_feed_forward"):
-                module.set_chunk_feed_forward(chunk_size=chunk_size, dim=dim)
-
-            for child in module.children():
-                fn_recursive_feed_forward(child, chunk_size, dim)
-
-        for module in self.children():
-            fn_recursive_feed_forward(module, None, 0)
