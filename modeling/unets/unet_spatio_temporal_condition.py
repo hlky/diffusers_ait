@@ -18,7 +18,7 @@ class UNetSpatioTemporalConditionOutput(BaseOutput):
     The output of [`UNetSpatioTemporalConditionModel`].
 
     Args:
-        sample (`Tensor` of shape `(batch_size, num_frames, num_channels, height, width)`):
+        sample (`Tensor` of shape `(batch_size, num_frames, height, width, num_channels)`):
             The hidden states output conditioned on `encoder_hidden_states` input. Output of last layer of model.
     """
 
@@ -88,6 +88,7 @@ class UNetSpatioTemporalConditionModel(nn.Module):
         transformer_layers_per_block: Union[int, Tuple[int], Tuple[Tuple]] = 1,
         num_attention_heads: Union[int, Tuple[int]] = (5, 10, 20, 20),
         num_frames: int = 25,
+        dtype: str = "float16",
     ):
         super().__init__()
 
@@ -126,26 +127,35 @@ class UNetSpatioTemporalConditionModel(nn.Module):
             )
 
         # input
-        self.conv_in = nn.Conv2d(
-            in_channels,
-            block_out_channels[0],
-            kernel_size=3,
-            padding=1,
+        self.conv_in = nn.Conv2dBias(
+            in_channels, block_out_channels[0], kernel_size=3, padding=1, dtype=dtype
         )
 
         # time
         time_embed_dim = block_out_channels[0] * 4
 
-        self.time_proj = Timesteps(block_out_channels[0], True, downscale_freq_shift=0)
+        self.time_proj = Timesteps(
+            block_out_channels[0],
+            True,
+            downscale_freq_shift=0,
+            dtype=dtype,
+            arange_name="time_proj",
+        )
         timestep_input_dim = block_out_channels[0]
 
-        self.time_embedding = TimestepEmbedding(timestep_input_dim, time_embed_dim)
+        self.time_embedding = TimestepEmbedding(
+            timestep_input_dim, time_embed_dim, dtype=dtype
+        )
 
         self.add_time_proj = Timesteps(
-            addition_time_embed_dim, True, downscale_freq_shift=0
+            addition_time_embed_dim,
+            True,
+            downscale_freq_shift=0,
+            dtype=dtype,
+            arange_name="add_time_proj",
         )
         self.add_embedding = TimestepEmbedding(
-            projection_class_embeddings_input_dim, time_embed_dim
+            projection_class_embeddings_input_dim, time_embed_dim, dtype=dtype
         )
 
         self.down_blocks = nn.ModuleList([])
@@ -186,6 +196,7 @@ class UNetSpatioTemporalConditionModel(nn.Module):
                 cross_attention_dim=cross_attention_dim[i],
                 num_attention_heads=num_attention_heads[i],
                 resnet_act_fn="silu",
+                dtype=dtype,
             )
             self.down_blocks.append(down_block)
 
@@ -196,6 +207,7 @@ class UNetSpatioTemporalConditionModel(nn.Module):
             transformer_layers_per_block=transformer_layers_per_block[-1],
             cross_attention_dim=cross_attention_dim[-1],
             num_attention_heads=num_attention_heads[-1],
+            dtype=dtype,
         )
 
         # count how many layers upsample the images
@@ -241,21 +253,19 @@ class UNetSpatioTemporalConditionModel(nn.Module):
                 cross_attention_dim=reversed_cross_attention_dim[i],
                 num_attention_heads=reversed_num_attention_heads[i],
                 resnet_act_fn="silu",
+                dtype=dtype,
             )
             self.up_blocks.append(up_block)
             prev_output_channel = output_channel
 
         # out
         self.conv_norm_out = nn.GroupNorm(
-            num_channels=block_out_channels[0], num_groups=32, eps=1e-5
+            num_channels=block_out_channels[0], num_groups=32, eps=1e-5, dtype=dtype
         )
-        self.conv_act = nn.SiLU()
+        self.conv_act = ops.silu
 
-        self.conv_out = nn.Conv2d(
-            block_out_channels[0],
-            out_channels,
-            kernel_size=3,
-            padding=1,
+        self.conv_out = nn.Conv2dBias(
+            block_out_channels[0], out_channels, kernel_size=3, padding=1, dtype=dtype
         )
 
     def set_attn_processor(
@@ -294,38 +304,6 @@ class UNetSpatioTemporalConditionModel(nn.Module):
         for name, module in self.named_children():
             fn_recursive_attn_processor(name, module, processor)
 
-    # Copied from diffusers.models.unets.unet_3d_condition.UNet3DConditionModel.enable_forward_chunking
-    def enable_forward_chunking(
-        self, chunk_size: Optional[int] = None, dim: int = 0
-    ) -> None:
-        """
-        Sets the attention processor to use [feed forward
-        chunking](https://huggingface.co/blog/reformer#2-chunked-feed-forward-layers).
-
-        Parameters:
-            chunk_size (`int`, *optional*):
-                The chunk size of the feed-forward layers. If not specified, will run feed-forward layer individually
-                over each tensor of dim=`dim`.
-            dim (`int`, *optional*, defaults to `0`):
-                The dimension over which the feed-forward computation should be chunked. Choose between dim=0 (batch)
-                or dim=1 (sequence length).
-        """
-        if dim not in [0, 1]:
-            raise ValueError(f"Make sure to set `dim` to either 0 or 1, not {dim}")
-
-        # By default chunk size is 1
-        chunk_size = chunk_size or 1
-
-        def fn_recursive_feed_forward(module: nn.Module, chunk_size: int, dim: int):
-            if hasattr(module, "set_chunk_feed_forward"):
-                module.set_chunk_feed_forward(chunk_size=chunk_size, dim=dim)
-
-            for child in module.children():
-                fn_recursive_feed_forward(child, chunk_size, dim)
-
-        for module in self.children():
-            fn_recursive_feed_forward(module, chunk_size, dim)
-
     def forward(
         self,
         sample: Tensor,
@@ -356,31 +334,29 @@ class UNetSpatioTemporalConditionModel(nn.Module):
         """
         # 1. time
         timesteps = timestep
-        if len(timesteps.shape) == 0:
-            timesteps = timesteps[None].to(sample.device)
 
         # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
-        batch_size, num_frames = sample.shape[:2]
-        timesteps = timesteps.expand(batch_size)
+        batch_size, num_frames = ops.size()(sample)[:2]
+        timesteps = ops.expand()(timesteps, [batch_size])
 
         t_emb = self.time_proj(timesteps)
 
         # `Timesteps` does not contain any weights and will always return f32 tensors
         # but time_embedding might actually be running in fp16. so we need to cast here.
         # there might be better ways to encapsulate this.
-        t_emb = t_emb.to(dtype=sample.dtype)
+        t_emb = ops.cast()(t_emb, dtype=sample.dtype())
 
         emb = self.time_embedding(t_emb)
 
-        time_embeds = self.add_time_proj(added_time_ids.flatten())
-        time_embeds = time_embeds.reshape((batch_size, -1))
-        time_embeds = time_embeds.to(emb.dtype)
+        time_embeds = self.add_time_proj(ops.flatten()(added_time_ids))
+        time_embeds = ops.reshape()(time_embeds, [batch_size, -1])
+        time_embeds = ops.cast()(time_embeds, emb.dtype())
         aug_emb = self.add_embedding(time_embeds)
         emb = emb + aug_emb
 
         # Flatten the batch and frames dimensions
         # sample: [batch, frames, channels, height, width] -> [batch * frames, channels, height, width]
-        sample = sample.flatten(0, 1)
+        sample = ops.flatten(0, 1)(sample)
         # Repeat the embeddings num_video_frames times
         # emb: [batch, channels] -> [batch * frames, channels]
         emb = emb.repeat_interleave(num_frames, dim=0)
@@ -392,8 +368,8 @@ class UNetSpatioTemporalConditionModel(nn.Module):
         # 2. pre-process
         sample = self.conv_in(sample)
 
-        image_only_indicator = torch.zeros(
-            batch_size, num_frames, dtype=sample.dtype, device=sample.device
+        image_only_indicator = ops.full()(
+            [batch_size, num_frames], fill_value=0.0, dtype=sample.dtype()
         )
 
         down_block_res_samples = (sample,)
@@ -457,7 +433,9 @@ class UNetSpatioTemporalConditionModel(nn.Module):
         sample = self.conv_out(sample)
 
         # 7. Reshape back to original shape
-        sample = sample.reshape(batch_size, num_frames, *sample.shape[1:])
+        sample = ops.reshape()(
+            sample, [batch_size, num_frames, *ops.size()(sample)[1:]]
+        )
 
         if not return_dict:
             return (sample,)

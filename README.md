@@ -45,3 +45,6 @@ Pad mode reflect
     - `AttnDownBlock1D`
     - `DownBlock1D`
     - `AttnUpBlock1D`
+
+Missing `repeat_interleave`
+- Various 3D unet
