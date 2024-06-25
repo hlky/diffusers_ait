@@ -1,4 +1,6 @@
-import inspect
+# TODO: sync attention for JointTransformerBlock
+# TODO: sync embeddings for CombinedTimestepTextProjEmbeddings
+
 from functools import partial
 from typing import Any, Dict, List, Optional, Union
 
@@ -7,7 +9,7 @@ from aitemplate.compiler import ops
 from aitemplate.frontend import nn, Tensor
 
 from ..attention import JointTransformerBlock
-from ..attention_processor import Attention, AttentionProcessor
+from ..attention_processor import AttentionProcessor
 from ..embeddings import CombinedTimestepTextProjEmbeddings, PatchEmbed
 from ..normalization import AdaLayerNormContinuous
 from .transformer_2d import Transformer2DModelOutput
@@ -49,31 +51,35 @@ class SD3Transformer2DModel(nn.Module):
         pooled_projection_dim: int = 2048,
         out_channels: int = 16,
         pos_embed_max_size: int = 96,
+        dtype: str = "float16",
     ):
         super().__init__()
         default_out_channels = in_channels
         self.out_channels = (
             out_channels if out_channels is not None else default_out_channels
         )
-        self.inner_dim = (
-            self.config.num_attention_heads * self.config.attention_head_dim
-        )
+        self.inner_dim = num_attention_heads * attention_head_dim
+        self.attention_head_dim = attention_head_dim
+        self.num_attention_heads = num_attention_heads
+        self.joint_attention_dim = joint_attention_dim
+        self.caption_projection_dim = caption_projection_dim
+        self.pooled_projection_dim = pooled_projection_dim
+        self.patch_size = patch_size
+        self.sample_size = sample_size
 
         self.pos_embed = PatchEmbed(
-            height=self.config.sample_size,
-            width=self.config.sample_size,
-            patch_size=self.config.patch_size,
-            in_channels=self.config.in_channels,
+            height=sample_size,
+            width=sample_size,
+            patch_size=patch_size,
+            in_channels=in_channels,
             embed_dim=self.inner_dim,
             pos_embed_max_size=pos_embed_max_size,  # hard-code for now.
         )
         self.time_text_embed = CombinedTimestepTextProjEmbeddings(
             embedding_dim=self.inner_dim,
-            pooled_projection_dim=self.config.pooled_projection_dim,
+            pooled_projection_dim=pooled_projection_dim,
         )
-        self.context_embedder = nn.Linear(
-            self.config.joint_attention_dim, self.config.caption_projection_dim
-        )
+        self.context_embedder = nn.Linear(joint_attention_dim, caption_projection_dim)
 
         # `attention_head_dim` is doubled to account for the mixing.
         # It needs to crafted when we get the actual checkpoints.
@@ -81,11 +87,11 @@ class SD3Transformer2DModel(nn.Module):
             [
                 JointTransformerBlock(
                     dim=self.inner_dim,
-                    num_attention_heads=self.config.num_attention_heads,
+                    num_attention_heads=num_attention_heads,
                     attention_head_dim=self.inner_dim,
                     context_pre_only=i == num_layers - 1,
                 )
-                for i in range(self.config.num_layers)
+                for i in range(num_layers)
             ]
         )
 
@@ -97,38 +103,6 @@ class SD3Transformer2DModel(nn.Module):
         )
 
         self.gradient_checkpointing = False
-
-    # Copied from diffusers.models.unets.unet_3d_condition.UNet3DConditionModel.enable_forward_chunking
-    def enable_forward_chunking(
-        self, chunk_size: Optional[int] = None, dim: int = 0
-    ) -> None:
-        """
-        Sets the attention processor to use [feed forward
-        chunking](https://huggingface.co/blog/reformer#2-chunked-feed-forward-layers).
-
-        Parameters:
-            chunk_size (`int`, *optional*):
-                The chunk size of the feed-forward layers. If not specified, will run feed-forward layer individually
-                over each tensor of dim=`dim`.
-            dim (`int`, *optional*, defaults to `0`):
-                The dimension over which the feed-forward computation should be chunked. Choose between dim=0 (batch)
-                or dim=1 (sequence length).
-        """
-        if dim not in [0, 1]:
-            raise ValueError(f"Make sure to set `dim` to either 0 or 1, not {dim}")
-
-        # By default chunk size is 1
-        chunk_size = chunk_size or 1
-
-        def fn_recursive_feed_forward(module: nn.Module, chunk_size: int, dim: int):
-            if hasattr(module, "set_chunk_feed_forward"):
-                module.set_chunk_feed_forward(chunk_size=chunk_size, dim=dim)
-
-            for child in module.children():
-                fn_recursive_feed_forward(child, chunk_size, dim)
-
-        for module in self.children():
-            fn_recursive_feed_forward(module, chunk_size, dim)
 
     # Copied from diffusers.models.unets.unet_2d_condition.UNet2DConditionModel.set_attn_processor
     def set_attn_processor(
@@ -203,25 +177,7 @@ class SD3Transformer2DModel(nn.Module):
             If `return_dict` is True, an [`~models.transformer_2d.Transformer2DModelOutput`] is returned, otherwise a
             `tuple` where the first element is the sample tensor.
         """
-        if joint_attention_kwargs is not None:
-            joint_attention_kwargs = joint_attention_kwargs.copy()
-            lora_scale = joint_attention_kwargs.pop("scale", 1.0)
-        else:
-            lora_scale = 1.0
-
-        if USE_PEFT_BACKEND:
-            # weight the lora layers by setting `lora_scale` for each PEFT layer
-            scale_lora_layers(self, lora_scale)
-        else:
-            if (
-                joint_attention_kwargs is not None
-                and joint_attention_kwargs.get("scale", None) is not None
-            ):
-                logger.warning(
-                    "Passing `scale` via `joint_attention_kwargs` when not using the PEFT backend is ineffective."
-                )
-
-        height, width = hidden_states.shape[-2:]
+        height, width = ops.size()(hidden_states)[1:2]
 
         hidden_states = self.pos_embed(
             hidden_states
@@ -253,33 +209,27 @@ class SD3Transformer2DModel(nn.Module):
         hidden_states = self.proj_out(hidden_states)
 
         # unpatchify
-        patch_size = self.config.patch_size
-        height = height // patch_size
-        width = width // patch_size
-
-        hidden_states = hidden_states.reshape(
-            shape=(
-                hidden_states.shape[0],
+        patch_size = self.patch_size
+        height = height / patch_size
+        width = width / patch_size
+        hidden_states = ops.reshape()(
+            hidden_states,
+            [
+                -1,
                 height,
                 width,
-                patch_size,
-                patch_size,
+                self.patch_size,
+                self.patch_size,
                 self.out_channels,
-            )
+            ],
         )
-        hidden_states = torch.einsum("nhwpqc->nchpwq", hidden_states)
-        output = hidden_states.reshape(
-            shape=(
-                hidden_states.shape[0],
-                self.out_channels,
-                height * patch_size,
-                width * patch_size,
-            )
+        hidden_states = ops.permute()(
+            hidden_states, [0, 1, 3, 2, 4, 5]
+        )  # torch: nhwpqc->nchpwq
+        output = ops.reshape()(
+            hidden_states,
+            [-1, height * self.patch_size, width * self.patch_size, self.out_channels],
         )
-
-        if USE_PEFT_BACKEND:
-            # remove `lora_scale` from each PEFT layer
-            unscale_lora_layers(self, lora_scale)
 
         if not return_dict:
             return (output,)
