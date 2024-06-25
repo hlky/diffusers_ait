@@ -49,6 +49,7 @@ class DualTransformer2DModel(nn.Module):
         num_vector_embeds: Optional[int] = None,
         activation_fn: str = "geglu",
         num_embeds_ada_norm: Optional[int] = None,
+        dtype: str = "float16",
     ):
         super().__init__()
         self.transformers = nn.ModuleList(
@@ -66,6 +67,7 @@ class DualTransformer2DModel(nn.Module):
                     num_vector_embeds=num_vector_embeds,
                     activation_fn=activation_fn,
                     num_embeds_ada_norm=num_embeds_ada_norm,
+                    dtype=dtype,
                 )
                 for _ in range(2)
             ]
