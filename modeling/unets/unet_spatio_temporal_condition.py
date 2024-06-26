@@ -338,7 +338,7 @@ class UNetSpatioTemporalConditionModel(nn.Module):
         timesteps = timestep
 
         # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
-        batch_size, num_frames = ops.size()(sample)[:2]
+        batch_size, num_frames, height, width, channel = ops.size()(sample)
         timesteps = ops.expand()(timesteps, [batch_size])
 
         t_emb = self.time_proj(timesteps)
@@ -358,12 +358,14 @@ class UNetSpatioTemporalConditionModel(nn.Module):
 
         # Flatten the batch and frames dimensions
         # sample: [batch, frames, height, width, channels] -> [batch * frames, height, width, channels]
-        sample = ops.flatten(0, 1)(sample)
+        sample = ops.reshape()(
+            sample, [batch_size * num_frames, height, width, channel]
+        )
         # Repeat the embeddings num_video_frames times
         # emb: [batch, channels] -> [batch * frames, channels]
-        emb = ops.repeat_interleave(num_frames, 0)(emb)
+        emb = ops.repeat_interleave(num_frames._attrs["int_var"], 0)(emb)
         # encoder_hidden_states: [batch, 1, channels] -> [batch * frames, 1, channels]
-        encoder_hidden_states = ops.repeat_interleave(num_frames, 0)(
+        encoder_hidden_states = ops.repeat_interleave(num_frames._attrs["int_var"], 0)(
             encoder_hidden_states
         )
 
@@ -371,7 +373,9 @@ class UNetSpatioTemporalConditionModel(nn.Module):
         sample = self.conv_in(sample)
 
         image_only_indicator = ops.full()(
-            [batch_size, num_frames], fill_value=0.0, dtype=sample.dtype()
+            [batch_size._attrs["int_var"], num_frames._attrs["int_var"]],
+            fill_value=0.0,
+            dtype="bool",
         )
 
         down_block_res_samples = (sample,)
