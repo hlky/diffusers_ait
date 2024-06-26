@@ -158,6 +158,7 @@ class AdaLayerNormSingle(nn.Module):
         resolution: Optional[Tensor] = None,
         aspect_ratio: Optional[Tensor] = None,
         batch_size: Optional[int] = None,
+        hidden_dtype: Optional[str] = None,
     ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
         # No modulation happening here.
         embedded_timestep = self.emb(timestep, resolution, aspect_ratio, batch_size)
