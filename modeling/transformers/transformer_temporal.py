@@ -327,8 +327,8 @@ class TransformerSpatioTemporalModel(nn.Module):
                 ops.unsqueeze(0)(time_context),
                 [batch_size, num_frames, -1, ops.size()(time_context, dim=-1)],
             ),
-            start_indices=[0, 0],
-            end_indices=[None, 1],
+            start_indices=[0, 0, 0, 0],
+            end_indices=[None, 1, None, None],
         )
         time_context = ops.reshape()(
             ops.unsqueeze(0)(time_context_first_timestep),
@@ -354,8 +354,10 @@ class TransformerSpatioTemporalModel(nn.Module):
         hidden_states = self.proj_in(hidden_states)
 
         num_frames_emb = Tensor(
-            [num_frames * batch_size], name="num_frames_emb"
+            [num_frames._attrs["int_var"] * batch_size._attrs["int_var"]],
+            name="num_frames_emb",
         )  # arange(num_frames), repeat(batch_size, 1), reshape(-1)
+        # NOTE: another useful case for arange kernel
         t_emb = self.time_proj(num_frames_emb)
 
         # `Timesteps` does not contain any weights and will always return f32 tensors
