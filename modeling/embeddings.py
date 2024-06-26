@@ -7,7 +7,7 @@ from aitemplate.compiler import ops
 
 from aitemplate.frontend import nn, Tensor
 
-from .activations import FP32SiLU
+from .activations import FP32SiLU, get_activation
 
 # TODO: sync with diffusers
 
@@ -141,18 +141,52 @@ class TimestepEmbedding(nn.Module):
         in_channels: int,
         time_embed_dim: int,
         act_fn: str = "silu",
+        out_dim: int = None,
+        post_act_fn: Optional[str] = None,
+        cond_proj_dim=None,
+        sample_proj_bias=True,
         dtype: str = "float16",
     ):
         super().__init__()
 
         self.linear_1 = nn.Linear(
-            in_channels, time_embed_dim, specialization="swish", dtype=dtype
+            in_channels, time_embed_dim, sample_proj_bias, dtype=dtype
         )
-        self.linear_2 = nn.Linear(time_embed_dim, time_embed_dim, dtype=dtype)
 
-    def forward(self, sample):
+        if cond_proj_dim is not None:
+            self.cond_proj = nn.Linear(
+                cond_proj_dim, in_channels, bias=False, dtype=dtype
+            )
+        else:
+            self.cond_proj = None
+
+        self.act = get_activation(act_fn)
+
+        if out_dim is not None:
+            time_embed_dim_out = out_dim
+        else:
+            time_embed_dim_out = time_embed_dim
+        self.linear_2 = nn.Linear(
+            time_embed_dim, time_embed_dim_out, sample_proj_bias, dtype=dtype
+        )
+
+        if post_act_fn is None:
+            self.post_act = None
+        else:
+            self.post_act = get_activation(post_act_fn)
+
+    def forward(self, sample: Tensor, condition: Optional[Tensor] = None):
+        if condition is not None:
+            sample = sample + self.cond_proj(condition)
         sample = self.linear_1(sample)
+
+        if self.act is not None:
+            sample = self.act(sample)
+
         sample = self.linear_2(sample)
+
+        if self.post_act is not None:
+            sample = self.post_act(sample)
         return sample
 
 
