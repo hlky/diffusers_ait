@@ -8,6 +8,9 @@ aka `torch.linalg.vector_norm` only supports single reduction axes.
     - `Stable Cascade`/`Wuerstchen`
     - `UVit`
 
+### ops.reduce_*
+only supports single reduction axes.
+
 ### AvgPool1d
 
 ### ConvTranspose1d
