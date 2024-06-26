@@ -546,7 +546,7 @@ class UNetMotionModel(nn.Module):
         forward_upsample_size = False
         upsample_size = None
 
-        for dim in ops.size()(sample)[1:2]:
+        for dim in [height, width]:
             if dim % default_overall_up_factor != 0:
                 # Forward upsample size to force interpolation output size.
                 forward_upsample_size = True
@@ -698,7 +698,7 @@ class UNetMotionModel(nn.Module):
             # if we have not reached the final block and need to forward the
             # upsample size, we do it here
             if not is_final_block and forward_upsample_size:
-                upsample_size = ops.size()(down_block_res_samples[-1])[1:2]
+                upsample_size = ops.size()(down_block_res_samples[-1])[1:3]
 
             if (
                 hasattr(upsample_block, "has_cross_attention")

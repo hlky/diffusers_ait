@@ -3570,7 +3570,7 @@ class KAttentionBlock(nn.Module):
         if self.add_self_attention:
             norm_hidden_states = self.norm1(hidden_states, emb)
 
-            height, weight = ops.size()(norm_hidden_states)[1:2]
+            height, weight = ops.size()(norm_hidden_states)[1:3]
             norm_hidden_states = self._to_3d(norm_hidden_states, height, weight)
 
             attn_output = self.attn1(
@@ -3586,7 +3586,7 @@ class KAttentionBlock(nn.Module):
         # 2. Cross-Attention/None
         norm_hidden_states = self.norm2(hidden_states, emb)
 
-        height, weight = ops.size()(norm_hidden_states)[1:2]
+        height, weight = ops.size()(norm_hidden_states)[1:3]
         norm_hidden_states = self._to_3d(norm_hidden_states, height, weight)
         attn_output = self.attn2(
             norm_hidden_states,
