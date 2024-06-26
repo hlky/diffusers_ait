@@ -588,7 +588,11 @@ class UNet2DConditionModel(nn.Module):
             time_embed_dim = time_embedding_dim or block_out_channels[0] * 4
 
             self.time_proj = Timesteps(
-                block_out_channels[0], flip_sin_to_cos, freq_shift, dtype=dtype
+                block_out_channels[0],
+                flip_sin_to_cos,
+                freq_shift,
+                dtype=dtype,
+                arange_name="time_proj",
             )
             timestep_input_dim = block_out_channels[0]
         else:
@@ -724,7 +728,11 @@ class UNet2DConditionModel(nn.Module):
             )
         elif addition_embed_type == "text_time":
             self.add_time_proj = Timesteps(
-                addition_time_embed_dim, flip_sin_to_cos, freq_shift, dtype=dtype
+                addition_time_embed_dim,
+                flip_sin_to_cos,
+                freq_shift,
+                dtype=dtype,
+                arange_name="add_time_proj",
             )
             self.add_embedding = TimestepEmbedding(
                 projection_class_embeddings_input_dim, time_embed_dim, dtype=dtype
