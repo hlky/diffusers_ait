@@ -6,7 +6,7 @@ from aitemplate.compiler import ops
 from aitemplate.frontend import nn, Tensor
 
 from ..activations import get_activation
-from ..attention_processor import Attention, AttnAddedKVProcessor2_0
+from ..attention_processor import Attention  # , AttnAddedKVProcessor2_0
 from ..normalization import AdaGroupNorm
 from ..resnet import (
     Downsample2D,

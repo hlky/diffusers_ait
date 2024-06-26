@@ -5,15 +5,9 @@ from aitemplate.compiler import ops
 
 from aitemplate.frontend import nn, Tensor
 
-from ...schedulers import ConsistencyDecoderScheduler
-from ...utils.torch_utils import randn_tensor
-from ..attention_processor import (
-    ADDED_KV_ATTENTION_PROCESSORS,
-    AttentionProcessor,
-    AttnAddedKVProcessor,
-    AttnProcessor,
-    CROSS_ATTENTION_PROCESSORS,
-)
+# from ...schedulers import ConsistencyDecoderScheduler
+# from ...utils.torch_utils import randn_tensor
+from ..attention_processor import AttentionProcessor
 
 from ..unets.unet_2d import UNet2DModel
 from ..utils import BaseOutput
