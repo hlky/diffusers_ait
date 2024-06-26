@@ -26,8 +26,6 @@ Maybe input can be padded to use upsampling2d
     - `DownBlock1D`
     - `AttnUpBlock1D`
 
-### upsampling2d - `align_corners=True`
-
 ### `PixelUnshuffle`/`PixelShuffle`
 - `StableCascadeUNet`
 
