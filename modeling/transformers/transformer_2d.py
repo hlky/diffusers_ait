@@ -373,6 +373,7 @@ class Transformer2DModel(nn.Module):
         attention_mask: Optional[Tensor] = None,
         encoder_attention_mask: Optional[Tensor] = None,
         return_dict: bool = True,
+        pos_embed: Optional[Tensor] = None,
     ):
         """
         The [`Transformer2DModel`] forward method.
@@ -450,12 +451,16 @@ class Transformer2DModel(nn.Module):
             hidden_states = self.latent_image_embedding(hidden_states)
         elif self.is_input_patches:
             height, width = (
-                ops.size()(hidden_states, dim=1) / self.patch_size,
-                ops.size()(hidden_states, dim=2) / self.patch_size,
+                ops.size()(hidden_states, dim=1)._attrs["int_var"] / self.patch_size,
+                ops.size()(hidden_states, dim=2)._attrs["int_var"] / self.patch_size,
             )
             hidden_states, encoder_hidden_states, timestep, embedded_timestep = (
                 self._operate_on_patched_inputs(
-                    hidden_states, encoder_hidden_states, timestep, added_cond_kwargs
+                    hidden_states,
+                    encoder_hidden_states,
+                    timestep,
+                    added_cond_kwargs,
+                    pos_embed,
                 )
             )
 
@@ -518,10 +523,15 @@ class Transformer2DModel(nn.Module):
         return hidden_states, inner_dim
 
     def _operate_on_patched_inputs(
-        self, hidden_states, encoder_hidden_states, timestep, added_cond_kwargs
+        self,
+        hidden_states,
+        encoder_hidden_states,
+        timestep,
+        added_cond_kwargs,
+        pos_embed,
     ):
         batch_size = ops.size()(hidden_states, dim=0)
-        hidden_states = self.pos_embed(hidden_states)
+        hidden_states = self.pos_embed(hidden_states, pos_embed)
         embedded_timestep = None
 
         if self.adaln_single is not None:

@@ -161,6 +161,7 @@ class SD3Transformer2DModel(nn.Module):
         block_controlnet_hidden_states: List = None,
         joint_attention_kwargs: Optional[Dict[str, Any]] = None,
         return_dict: bool = True,
+        pos_embed: Optional[Tensor] = None,
     ) -> Union[Tensor, Transformer2DModelOutput]:
         """
         The [`SD3Transformer2DModel`] forward method.
@@ -188,10 +189,13 @@ class SD3Transformer2DModel(nn.Module):
             If `return_dict` is True, an [`~models.transformer_2d.Transformer2DModelOutput`] is returned, otherwise a
             `tuple` where the first element is the sample tensor.
         """
-        height, width = ops.size()(hidden_states)[1:2]
+        height, width = (
+            ops.size()(hidden_states, dim=1)._attrs["int_var"] / self.patch_size,
+            ops.size()(hidden_states, dim=2)._attrs["int_var"] / self.patch_size,
+        )
 
         hidden_states = self.pos_embed(
-            hidden_states
+            hidden_states, pos_embed
         )  # takes care of adding positional embeddings too.
         temb = self.time_text_embed(timestep, pooled_projections)
         encoder_hidden_states = self.context_embedder(encoder_hidden_states)
@@ -220,9 +224,6 @@ class SD3Transformer2DModel(nn.Module):
         hidden_states = self.proj_out(hidden_states)
 
         # unpatchify
-        patch_size = self.patch_size
-        height = height / patch_size
-        width = width / patch_size
         hidden_states = ops.reshape()(
             hidden_states,
             [
