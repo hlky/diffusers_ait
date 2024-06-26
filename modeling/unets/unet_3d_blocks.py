@@ -846,7 +846,9 @@ class CrossAttnUpBlock3D(nn.Module):
             #         b2=self.b2,
             #     )
 
-            hidden_states = ops.concatenate()([hidden_states, res_hidden_states], dim=1)
+            hidden_states = ops.concatenate()(
+                [hidden_states, res_hidden_states], dim=-1
+            )
 
             hidden_states = resnet(hidden_states, temb)
             hidden_states = temp_conv(hidden_states, num_frames=num_frames)
@@ -973,7 +975,9 @@ class UpBlock3D(nn.Module):
             #         b2=self.b2,
             #     )
 
-            hidden_states = ops.concatenate()([hidden_states, res_hidden_states], dim=1)
+            hidden_states = ops.concatenate()(
+                [hidden_states, res_hidden_states], dim=-1
+            )
 
             hidden_states = resnet(hidden_states, temb)
             hidden_states = temp_conv(hidden_states, num_frames=num_frames)
@@ -1413,7 +1417,9 @@ class CrossAttnUpBlockMotion(nn.Module):
             #         b2=self.b2,
             #     )
 
-            hidden_states = ops.concatenate()([hidden_states, res_hidden_states], dim=1)
+            hidden_states = ops.concatenate()(
+                [hidden_states, res_hidden_states], dim=-1
+            )
 
             hidden_states = resnet(hidden_states, temb)
             hidden_states = attn(
@@ -1554,7 +1560,9 @@ class UpBlockMotion(nn.Module):
             #         b2=self.b2,
             #     )
 
-            hidden_states = ops.concatenate()([hidden_states, res_hidden_states], dim=1)
+            hidden_states = ops.concatenate()(
+                [hidden_states, res_hidden_states], dim=-1
+            )
 
             hidden_states = resnet(hidden_states, temb)
             hidden_states = motion_module(hidden_states, num_frames=num_frames)[0]
@@ -2157,7 +2165,9 @@ class UpBlockSpatioTemporal(nn.Module):
             res_hidden_states = res_hidden_states_tuple[-1]
             res_hidden_states_tuple = res_hidden_states_tuple[:-1]
 
-            hidden_states = ops.concatenate()([hidden_states, res_hidden_states], dim=1)
+            hidden_states = ops.concatenate()(
+                [hidden_states, res_hidden_states], dim=-1
+            )
 
             hidden_states = resnet(
                 hidden_states,
@@ -2255,7 +2265,9 @@ class CrossAttnUpBlockSpatioTemporal(nn.Module):
             res_hidden_states = res_hidden_states_tuple[-1]
             res_hidden_states_tuple = res_hidden_states_tuple[:-1]
 
-            hidden_states = ops.concatenate()([hidden_states, res_hidden_states], dim=1)
+            hidden_states = ops.concatenate()(
+                [hidden_states, res_hidden_states], dim=-1
+            )
 
             hidden_states = resnet(
                 hidden_states,
