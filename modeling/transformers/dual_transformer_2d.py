@@ -50,6 +50,7 @@ class DualTransformer2DModel(nn.Module):
         activation_fn: str = "geglu",
         num_embeds_ada_norm: Optional[int] = None,
         dtype: str = "float16",
+        **kwargs,
     ):
         super().__init__()
         self.transformers = nn.ModuleList(

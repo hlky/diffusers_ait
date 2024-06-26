@@ -90,6 +90,7 @@ class UNetSpatioTemporalConditionModel(nn.Module):
         num_attention_heads: Union[int, Tuple[int]] = (5, 10, 20, 20),
         num_frames: int = 25,
         dtype: str = "float16",
+        **kwargs,
     ):
         super().__init__()
 

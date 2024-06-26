@@ -116,6 +116,7 @@ class UNet2DModel(nn.Module):
         num_class_embeds: Optional[int] = None,
         num_train_timesteps: Optional[int] = None,
         dtype: str = "float16",
+        **kwargs,
     ):
         super().__init__()
 

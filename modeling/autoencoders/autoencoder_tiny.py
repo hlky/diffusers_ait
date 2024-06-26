@@ -97,6 +97,7 @@ class AutoencoderTiny(nn.Module):
         scaling_factor: float = 1.0,
         shift_factor: float = 0.0,
         dtype: str = "float16",
+        **kwargs,
     ):
         super().__init__()
 

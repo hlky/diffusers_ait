@@ -94,6 +94,7 @@ class ConsistencyDecoderVAE(nn.Module):
             "ResnetUpsampleBlock2D",
             "ResnetUpsampleBlock2D",
         ),
+        **kwargs,
     ):
         super().__init__()
         self.encoder = Encoder(

@@ -86,6 +86,7 @@ class PixArtTransformer2DModel(nn.Module):
         caption_channels: Optional[int] = None,
         attention_type: Optional[str] = "default",
         dtype: str = "float16",
+        **kwargs,
     ):
         super().__init__()
 

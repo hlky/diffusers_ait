@@ -80,6 +80,7 @@ class PriorTransformer(nn.Module):
         embedding_proj_dim: Optional[int] = None,
         clip_embed_dim: Optional[int] = None,
         dtype: str = "float16",
+        **kwargs,
     ):
         super().__init__()
         self.num_attention_heads = num_attention_heads

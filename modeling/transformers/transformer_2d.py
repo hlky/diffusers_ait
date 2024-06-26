@@ -73,6 +73,7 @@ class Transformer2DModel(nn.Module):
         interpolation_scale: float = None,
         use_additional_conditions: Optional[bool] = None,
         dtype: str = "float16",
+        **kwargs,
     ):
         super().__init__()
 

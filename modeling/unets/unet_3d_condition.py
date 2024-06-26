@@ -107,6 +107,7 @@ class UNet3DConditionModel(nn.Module):
         num_attention_heads: Optional[Union[int, Tuple[int]]] = None,
         time_cond_proj_dim: Optional[int] = None,
         dtype: str = "float16",
+        **kwargs,
     ):
         super().__init__()
 

@@ -19,6 +19,7 @@ class TemporalDecoder(nn.Module):
         block_out_channels: Tuple[int] = (128, 256, 512, 512),
         layers_per_block: int = 2,
         dtype: str = "float16",
+        **kwargs,
     ):
         super().__init__()
         self.dtype = dtype

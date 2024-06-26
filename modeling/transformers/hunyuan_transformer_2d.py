@@ -280,6 +280,7 @@ class HunyuanDiT2DModel(nn.Module):
         text_len: int = 77,
         text_len_t5: int = 256,
         dtype: str = "float16",
+        **kwargs,
     ):
         super().__init__()
         self.out_channels = in_channels * 2 if learn_sigma else in_channels

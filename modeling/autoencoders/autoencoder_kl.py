@@ -65,6 +65,7 @@ class AutoencoderKL(nn.Module):
         use_quant_conv: bool = True,
         use_post_quant_conv: bool = True,
         dtype: str = "float16",
+        **kwargs,
     ):
         super().__init__()
 

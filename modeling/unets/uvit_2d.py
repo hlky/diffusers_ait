@@ -48,6 +48,7 @@ class UVit2DModel(nn.Module):
         ln_elementwise_affine: bool = True,
         sample_size: int = 64,
         dtype: str = "float16",
+        **kwargs,
     ):
         super().__init__()
         self.micro_cond_encode_dim = micro_cond_encode_dim

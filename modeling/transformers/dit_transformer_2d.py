@@ -66,6 +66,7 @@ class DiTTransformer2DModel(nn.Module):
         norm_elementwise_affine: bool = False,
         norm_eps: float = 1e-5,
         dtype: str = "float16",
+        **kwargs,
     ):
         super().__init__()
 

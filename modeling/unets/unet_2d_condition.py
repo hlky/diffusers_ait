@@ -196,6 +196,7 @@ class UNet2DConditionModel(nn.Module):
         cross_attention_norm: Optional[str] = None,
         addition_embed_type_num_heads: int = 64,
         dtype: str = "float16",
+        **kwargs,
     ):
         super().__init__()
 

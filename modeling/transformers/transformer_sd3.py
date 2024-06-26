@@ -52,6 +52,7 @@ class SD3Transformer2DModel(nn.Module):
         out_channels: int = 16,
         pos_embed_max_size: int = 96,
         dtype: str = "float16",
+        **kwargs,
     ):
         super().__init__()
         default_out_channels = in_channels

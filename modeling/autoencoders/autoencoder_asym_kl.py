@@ -67,6 +67,7 @@ class AsymmetricAutoencoderKL(nn.Module):
         sample_size: int = 32,
         scaling_factor: float = 0.18215,
         dtype: str = "float16",
+        **kwargs,
     ) -> None:
         super().__init__()
 

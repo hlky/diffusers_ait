@@ -210,6 +210,7 @@ class UNetMotionModel(nn.Module):
         projection_class_embeddings_input_dim: Optional[int] = None,
         time_cond_proj_dim: Optional[int] = None,
         dtype: str = "float16",
+        **kwargs,
     ):
         super().__init__()
 

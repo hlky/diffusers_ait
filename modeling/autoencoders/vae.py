@@ -74,6 +74,7 @@ class Encoder(nn.Module):
         double_z: bool = True,
         mid_block_add_attention=True,
         dtype: str = "float16",
+        **kwargs,
     ):
         super().__init__()
         self.layers_per_block = layers_per_block
@@ -197,6 +198,7 @@ class Decoder(nn.Module):
         norm_type: str = "group",  # group, spatial
         mid_block_add_attention=True,
         dtype: str = "float16",
+        **kwargs,
     ):
         super().__init__()
         self.layers_per_block = layers_per_block

@@ -72,6 +72,7 @@ class TransformerTemporalModel(nn.Module):
         positional_embeddings: Optional[str] = None,
         num_positional_embeddings: Optional[int] = None,
         dtype: str = "float16",
+        **kwargs,
     ):
         super().__init__()
         self.num_attention_heads = num_attention_heads
