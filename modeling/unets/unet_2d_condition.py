@@ -478,7 +478,7 @@ class UNet2DConditionModel(nn.Module):
             self.conv_act = None
 
         conv_out_padding = (conv_out_kernel - 1) // 2
-        self.conv_out = nn.Conv2d(
+        self.conv_out = nn.Conv2dBias(
             block_out_channels[0],
             out_channels,
             kernel_size=conv_out_kernel,
@@ -1010,7 +1010,7 @@ class UNet2DConditionModel(nn.Module):
         upsample_size = None
 
         for dim in [height, width]:
-            if dim % default_overall_up_factor != 0:
+            if dim._attrs["int_var"] % default_overall_up_factor != 0:
                 # Forward upsample size to force interpolation output size.
                 forward_upsample_size = True
                 break

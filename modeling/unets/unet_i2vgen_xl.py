@@ -422,7 +422,7 @@ class I2VGenXLUNet(nn.Module):
         upsample_size = None
 
         for dim in [height, width]:
-            if dim % default_overall_up_factor != 0:
+            if dim._attrs["int_var"] % default_overall_up_factor != 0:
                 # Forward upsample size to force interpolation output size.
                 forward_upsample_size = True
                 break
