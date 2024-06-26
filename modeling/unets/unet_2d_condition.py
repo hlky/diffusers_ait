@@ -236,6 +236,11 @@ class UNet2DConditionModel(nn.Module):
 
         # input
         conv_in_padding = (conv_in_kernel - 1) // 2
+        self.in_channels = in_channels
+        if self.in_channels % 4 != 0:
+            in_channels = self.in_channels + (4 - (self.in_channels % 4))
+        else:
+            in_channels = self.in_channels
         self.conv_in = nn.Conv2dBias(
             in_channels,
             block_out_channels[0],
@@ -1079,6 +1084,9 @@ class UNet2DConditionModel(nn.Module):
         )
 
         # 2. pre-process
+        if self.in_channels % 4 != 0:
+            channel_pad = self.in_channels + (4 - (self.in_channels % 4))
+            sample = ops.pad_last_dim(4, channel_pad)(sample)
         sample = self.conv_in(sample)
 
         # 2.5 GLIGEN position net
