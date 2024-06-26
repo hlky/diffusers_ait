@@ -5,8 +5,9 @@ from aitemplate.compiler import ops
 
 from aitemplate.frontend import nn, Tensor
 
-from ...utils import BaseOutput
 from ..autoencoders.vae import Decoder, DecoderOutput, Encoder, VectorQuantizer
+
+from ..utils import BaseOutput
 
 
 @dataclass

@@ -5,9 +5,10 @@ from aitemplate.compiler import ops
 
 from aitemplate.frontend import nn, Tensor
 
-from ...utils import BaseOutput
 from ..attention_processor import Attention, AttentionProcessor
 from ..embeddings import SiLU, TimestepEmbedding, Timesteps
+
+from ..utils import BaseOutput
 
 
 @dataclass

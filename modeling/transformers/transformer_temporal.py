@@ -5,10 +5,11 @@ from aitemplate.compiler import ops
 
 from aitemplate.frontend import nn, Tensor
 
-from ...utils import BaseOutput
 from ..attention import BasicTransformerBlock, TemporalBasicTransformerBlock
 from ..embeddings import TimestepEmbedding, Timesteps
 from ..resnet import AlphaBlender
+
+from ..utils import BaseOutput
 
 
 @dataclass

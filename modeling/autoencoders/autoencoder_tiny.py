@@ -5,7 +5,7 @@ from aitemplate.compiler import ops
 
 from aitemplate.frontend import nn, Tensor
 
-from ...utils import BaseOutput
+from ..utils import BaseOutput
 
 from .vae import DecoderOutput, DecoderTiny, EncoderTiny
 

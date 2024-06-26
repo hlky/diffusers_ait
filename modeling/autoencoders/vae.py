@@ -7,7 +7,6 @@ from aitemplate.compiler import ops
 
 from aitemplate.frontend import nn, Tensor
 
-from ...utils import BaseOutput
 from ..activations import get_activation
 from ..attention_processor import SpatialNorm
 from ..unets.unet_2d_blocks import (
@@ -16,6 +15,8 @@ from ..unets.unet_2d_blocks import (
     get_up_block,
     UNetMidBlock2D,
 )
+
+from ..utils import BaseOutput
 
 
 def get_shape(x):

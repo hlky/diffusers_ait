@@ -5,7 +5,6 @@ from aitemplate.compiler import ops
 
 from aitemplate.frontend import nn, Tensor
 
-from ...utils import BaseOutput
 from ..activations import get_activation
 from ..attention_processor import AttentionProcessor
 from ..embeddings import (
@@ -20,6 +19,8 @@ from ..embeddings import (
     TimestepEmbedding,
     Timesteps,
 )
+
+from ..utils import BaseOutput
 
 from .unet_2d_blocks import get_down_block, get_mid_block, get_up_block
 

@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from ..utils import BaseOutput
+from .utils import BaseOutput
 
 
 @dataclass

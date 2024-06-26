@@ -8,9 +8,12 @@ from aitemplate.compiler import ops
 from aitemplate.frontend import nn, Tensor
 
 from ..attention import FeedForward
-from ..attention_processor import Attention, AttentionProcessor, HunyuanAttnProcessor2_0
+from ..attention_processor import (  # , HunyuanAttnProcessor2_0
+    Attention,
+    AttentionProcessor,
+)
 from ..embeddings import (
-    HunyuanCombinedTimestepTextSizeStyleEmbedding,
+    # HunyuanCombinedTimestepTextSizeStyleEmbedding,
     PatchEmbed,
     PixArtAlphaTextProjection,
 )

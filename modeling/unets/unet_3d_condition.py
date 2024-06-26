@@ -5,7 +5,6 @@ from aitemplate.compiler import ops
 
 from aitemplate.frontend import nn, Tensor
 
-from ...utils import BaseOutput
 from ..activations import get_activation
 from ..attention_processor import (
     ADDED_KV_ATTENTION_PROCESSORS,
@@ -18,6 +17,8 @@ from ..attention_processor import (
 from ..embeddings import TimestepEmbedding, Timesteps
 
 from ..transformers.transformer_temporal import TransformerTemporalModel
+
+from ..utils import BaseOutput
 from .unet_3d_blocks import (
     CrossAttnDownBlock3D,
     CrossAttnUpBlock3D,

@@ -5,8 +5,9 @@ from aitemplate.compiler import ops
 
 from aitemplate.frontend import nn, Tensor
 
-from ...utils import BaseOutput
 from ..embeddings import GaussianFourierProjection, TimestepEmbedding, Timesteps
+
+from ..utils import BaseOutput
 
 from .unet_1d_blocks import get_down_block, get_mid_block, get_out_block, get_up_block
 

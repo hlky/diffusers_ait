@@ -6,10 +6,11 @@ from aitemplate.compiler import ops
 
 from aitemplate.frontend import nn, Tensor
 
-from ...utils import BaseOutput
 from ..attention_processor import Attention
 from ..embeddings import GELU, SiLU
 from ..normalization import GlobalResponseNorm
+
+from ..utils import BaseOutput
 
 
 class SDCascadeLayerNorm(nn.LayerNorm):

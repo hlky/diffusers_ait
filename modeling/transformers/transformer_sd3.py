@@ -8,9 +8,9 @@ from aitemplate.compiler import ops
 
 from aitemplate.frontend import nn, Tensor
 
-from ..attention import JointTransformerBlock
+# from ..attention import JointTransformerBlock
 from ..attention_processor import AttentionProcessor
-from ..embeddings import CombinedTimestepTextProjEmbeddings, PatchEmbed
+from ..embeddings import PatchEmbed  # , CombinedTimestepTextProjEmbeddings
 from ..normalization import AdaLayerNormContinuous
 from .transformer_2d import Transformer2DModelOutput
 
