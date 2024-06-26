@@ -552,8 +552,9 @@ class TemporalBasicTransformerBlock(nn.Module):
         else:
             hidden_states = ff_output
 
-        hidden_states = ops.unsqueeze(0)(
-            hidden_states, [batch_size, seq_length, num_frames, channels]
+        hidden_states = ops.reshape()(
+            ops.unsqueeze(0)(hidden_states),
+            [batch_size, seq_length, num_frames, channels],
         )
         # hidden_states = hidden_states.permute(0, 2, 1, 3)
         hidden_states = ops.reshape()(
