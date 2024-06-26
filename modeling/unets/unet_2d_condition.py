@@ -960,7 +960,7 @@ class UNet2DConditionModel(nn.Module):
         timestep_cond: Optional[Tensor] = None,
         attention_mask: Optional[Tensor] = None,
         cross_attention_kwargs: Optional[Dict[str, Any]] = None,
-        added_cond_kwargs: Optional[Dict[str, Tensor]] = None,
+        added_cond_kwargs: Optional[Dict[str, Tensor]] = {},
         down_block_additional_residuals: Optional[Tuple[Tensor]] = None,
         mid_block_additional_residual: Optional[Tensor] = None,
         down_intrablock_additional_residuals: Optional[Tuple[Tensor]] = None,
