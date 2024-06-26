@@ -3,12 +3,20 @@ from typing import Dict, Optional, Tuple, Union
 
 from aitemplate.compiler import ops
 
-from aitemplate.frontend import nn, Tensor
+from aitemplate.frontend import IntVar, nn, Tensor
 
 from ..attention_processor import Attention, AttentionProcessor
 from ..embeddings import SiLU, TimestepEmbedding, Timesteps
 
 from ..utils import BaseOutput
+
+
+def get_shape(x):
+    shape = [
+        it.value() if not isinstance(it, IntVar) else it.symbolic_value()
+        for it in x._attrs["shape"]
+    ]
+    return shape
 
 
 @dataclass
@@ -45,6 +53,7 @@ class Kandinsky3UNet(nn.Module):
         cross_attention_dim: Union[int, Tuple[int]] = 4096,
         encoder_hid_dim: int = 4096,
         dtype: str = "float16",
+        **kwargs,
     ):
         super().__init__()
 
@@ -219,7 +228,9 @@ class Kandinsky3UNet(nn.Module):
 
         for level, up_sample in enumerate(self.up_blocks):
             if level != 0:
-                sample = ops.concatenate()([sample, hidden_states.pop()], dim=1)
+                temp_hidden_states = hidden_states.pop()
+                temp_hidden_states._attrs["shape"] = sample._attrs["shape"]
+                sample = ops.concatenate()([sample, temp_hidden_states], dim=-1)
             sample = up_sample(
                 sample, time_embed, encoder_hidden_states, encoder_attention_mask
             )
@@ -461,10 +472,10 @@ class Kandinsky3ConditionalGroupNorm(nn.Module):
     def forward(self, x, context):
         context = self.context_mlp(context)
 
-        for _ in range(len(ops.size()(x)[1:2])):
-            context = ops.unsqueeze(-1)(context)
+        for _ in range(len(ops.size()(x)[1:3])):
+            context = ops.unsqueeze(1)(context)
 
-        scale, shift = ops.chunk()(context, 2, dim=1)
+        scale, shift = ops.chunk()(context, 2, dim=-1)
         x = self.norm(x) * (scale + 1.0) + shift
         return x
 
@@ -580,6 +591,8 @@ class Kandinsky3ResNetBlock(nn.Module):
         x = self.shortcut_up_sample(x)
         x = self.shortcut_projection(x)
         x = self.shortcut_down_sample(x)
+
+        out._attrs["shape"] = x._attrs["shape"]
         x = x + out
         return x
 
@@ -605,7 +618,8 @@ class Kandinsky3AttentionPooling(nn.Module):
     def forward(
         self, x: Tensor, context: Tensor, context_mask: Optional[Tensor] = None
     ):
-        context_mask = ops.cast()(context_mask, dtype=context.dtype())
+        if context_mask is not None:
+            context_mask = ops.cast()(context_mask, dtype=context.dtype())
         context = self.attention(
             ops.reduce_mean(dim=1, keepdim=True)(context), context, context_mask
         )
@@ -654,7 +668,7 @@ class Kandinsky3AttentionBlock(nn.Module):
         context_mask: Optional[Tensor] = None,
         image_mask: Optional[Tensor] = None,
     ):
-        height, width = ops.size()(x)[1:2]
+        height, width = ops.size()(x)[1:3]
         out = self.in_norm(x, time_embed)
         out = ops.reshape()(out, [ops.size()(x, dim=0), height * width, -1])
         context = context if context is not None else out
@@ -669,5 +683,6 @@ class Kandinsky3AttentionBlock(nn.Module):
 
         out = self.out_norm(x, time_embed)
         out = self.feed_forward(out)
+        out._attrs["shape"] = x._attrs["shape"]
         x = x + out
         return x

@@ -107,8 +107,8 @@ def load_config(hf_hub: str, subfolder: Optional[str] = None):
     config = j
     _class_name = config.get("_class_name", "")
     _diffusers_version = config.pop("_diffusers_version")
-    remapped_class = _CLASS_REMAPPING_DICT.get(_class_name).get(
-        config["norm_type"], None
+    remapped_class = _CLASS_REMAPPING_DICT.get(_class_name, {}).get(
+        config.get("norm_type", None), None
     )
     if remapped_class:
         _class_name = remapped_class
