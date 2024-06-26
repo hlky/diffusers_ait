@@ -329,6 +329,7 @@ class PatchEmbed(nn.Module):
         if self.layer_norm:
             latent = self.norm(latent)
 
+        pos_embed._attrs["shape"] = latent._attrs["shape"]
         return latent + pos_embed
 
 
