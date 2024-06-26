@@ -447,7 +447,7 @@ class I2VGenXLUNet(nn.Module):
 
         # 3. time + FPS embeddings.
         emb = t_emb + fps_emb
-        emb = emb.repeat_interleave(repeats=num_frames, dim=0)
+        emb = ops.repeat_interleave(num_frames, 0)(emb)
 
         # 4. context embeddings.
         # The context embeddings consist of both text embeddings from the input prompt
@@ -489,7 +489,7 @@ class I2VGenXLUNet(nn.Module):
             image_emb, [-1, self.config.in_channels, self.config.cross_attention_dim]
         )
         context_emb = ops.concatenate()([context_emb, image_emb], dim=1)
-        context_emb = context_emb.repeat_interleave(repeats=num_frames, dim=0)
+        context_emb = ops.repeat_interleave(num_frames, 0)(context_emb)
 
         image_latents = ops.reshape()(
             image_latents,

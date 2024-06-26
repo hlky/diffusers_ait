@@ -361,10 +361,10 @@ class UNetSpatioTemporalConditionModel(nn.Module):
         sample = ops.flatten(0, 1)(sample)
         # Repeat the embeddings num_video_frames times
         # emb: [batch, channels] -> [batch * frames, channels]
-        emb = emb.repeat_interleave(num_frames, dim=0)
+        emb = ops.repeat_interleave(num_frames, 0)(emb)
         # encoder_hidden_states: [batch, 1, channels] -> [batch * frames, 1, channels]
-        encoder_hidden_states = encoder_hidden_states.repeat_interleave(
-            num_frames, dim=0
+        encoder_hidden_states = ops.repeat_interleave(num_frames, 0)(
+            encoder_hidden_states
         )
 
         # 2. pre-process

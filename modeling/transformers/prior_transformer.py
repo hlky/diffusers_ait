@@ -356,7 +356,7 @@ class PriorTransformer(nn.Module):
         hidden_states = hidden_states + positional_embeddings
 
         if attention_mask is not None:
-            raise NotImplementedError("repeat_interleave")
+            raise NotImplementedError("better pad interface")
             attention_mask = (1 - attention_mask.to(hidden_states.dtype)) * -10000.0
             attention_mask = F.pad(
                 attention_mask, (0, self.additional_embeddings), value=0.0

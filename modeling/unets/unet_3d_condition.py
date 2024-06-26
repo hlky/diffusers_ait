@@ -413,9 +413,9 @@ class UNet3DConditionModel(nn.Module):
         t_emb = ops.cast()(t_emb, dtype=self.dtype)
 
         emb = self.time_embedding(t_emb, timestep_cond)
-        emb = emb.repeat_interleave(repeats=num_frames, dim=0)
-        encoder_hidden_states = encoder_hidden_states.repeat_interleave(
-            repeats=num_frames, dim=0
+        emb = ops.repeat_interleave(num_frames, 0)(emb)
+        encoder_hidden_states = ops.repeat_interleave(num_frames, 0)(
+            encoder_hidden_states
         )
 
         # 2. pre-process

@@ -413,12 +413,10 @@ class Attention(nn.Module):
 
         if out_dim == 3:
             if ops.size()(attention_mask, dim=0) < batch_size * head_size:
-                raise NotImplementedError("repeat_interleave")
-                attention_mask = attention_mask.repeat_interleave(head_size, dim=0)
+                attention_mask = ops.repeat_interleave(head_size, 0)(attention_mask)
         elif out_dim == 4:
             attention_mask = ops.unsqueeze(1)(attention_mask)
-            raise NotImplementedError("repeat_interleave")
-            attention_mask = attention_mask.repeat_interleave(head_size, dim=1)
+            attention_mask = ops.repeat_interleave(head_size, 1)(attention_mask)
 
         return attention_mask
 

@@ -602,9 +602,9 @@ class UNetMotionModel(nn.Module):
             aug_emb = self.add_embedding(add_embeds)
 
         emb = emb if aug_emb is None else emb + aug_emb
-        emb = emb.repeat_interleave(repeats=num_frames, dim=0)
-        encoder_hidden_states = encoder_hidden_states.repeat_interleave(
-            repeats=num_frames, dim=0
+        emb = ops.repeat_interleave(num_frames, 0)(emb)
+        encoder_hidden_states = ops.repeat_interleave(num_frames, 0)(
+            encoder_hidden_states
         )
 
         if (
@@ -618,7 +618,7 @@ class UNetMotionModel(nn.Module):
             image_embeds = added_cond_kwargs.get("image_embeds")
             image_embeds = self.encoder_hid_proj(image_embeds)
             image_embeds = [
-                image_embed.repeat_interleave(repeats=num_frames, dim=0)
+                ops.repeat_interleave(num_frames, 0)(image_embed)
                 for image_embed in image_embeds
             ]
             encoder_hidden_states = (encoder_hidden_states, image_embeds)
