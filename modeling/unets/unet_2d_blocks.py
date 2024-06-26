@@ -2282,7 +2282,9 @@ class AttnUpBlock2D(nn.Module):
             # pop res hidden states
             res_hidden_states = res_hidden_states_tuple[-1]
             res_hidden_states_tuple = res_hidden_states_tuple[:-1]
-            hidden_states = ops.concatenate()([hidden_states, res_hidden_states], dim=1)
+            hidden_states = ops.concatenate()(
+                [hidden_states, res_hidden_states], dim=-1
+            )
 
             hidden_states = resnet(hidden_states, temb)
             hidden_states = attn(hidden_states)
@@ -2436,7 +2438,9 @@ class CrossAttnUpBlock2D(nn.Module):
             #         b2=self.b2,
             #     )
 
-            hidden_states = ops.concatenate()([hidden_states, res_hidden_states], dim=1)
+            hidden_states = ops.concatenate()(
+                [hidden_states, res_hidden_states], dim=-1
+            )
 
             hidden_states = resnet(hidden_states, temb)
             hidden_states = attn(
@@ -2549,7 +2553,9 @@ class UpBlock2D(nn.Module):
             #         b2=self.b2,
             #     )
 
-            hidden_states = ops.concatenate()([hidden_states, res_hidden_states], dim=1)
+            hidden_states = ops.concatenate()(
+                [hidden_states, res_hidden_states], dim=-1
+            )
 
             hidden_states = resnet(hidden_states, temb)
 
@@ -2877,7 +2883,9 @@ class AttnSkipUpBlock2D(nn.Module):
             # pop res hidden states
             res_hidden_states = res_hidden_states_tuple[-1]
             res_hidden_states_tuple = res_hidden_states_tuple[:-1]
-            hidden_states = ops.concatenate()([hidden_states, res_hidden_states], dim=1)
+            hidden_states = ops.concatenate()(
+                [hidden_states, res_hidden_states], dim=-1
+            )
 
             hidden_states = resnet(hidden_states, temb)
 
@@ -3001,7 +3009,9 @@ class SkipUpBlock2D(nn.Module):
             # pop res hidden states
             res_hidden_states = res_hidden_states_tuple[-1]
             res_hidden_states_tuple = res_hidden_states_tuple[:-1]
-            hidden_states = ops.concatenate()([hidden_states, res_hidden_states], dim=1)
+            hidden_states = ops.concatenate()(
+                [hidden_states, res_hidden_states], dim=-1
+            )
 
             hidden_states = resnet(hidden_states, temb)
 
@@ -3107,7 +3117,9 @@ class ResnetUpsampleBlock2D(nn.Module):
             # pop res hidden states
             res_hidden_states = res_hidden_states_tuple[-1]
             res_hidden_states_tuple = res_hidden_states_tuple[:-1]
-            hidden_states = ops.concatenate()([hidden_states, res_hidden_states], dim=1)
+            hidden_states = ops.concatenate()(
+                [hidden_states, res_hidden_states], dim=-1
+            )
 
             hidden_states = resnet(hidden_states, temb)
 
@@ -3246,7 +3258,9 @@ class SimpleCrossAttnUpBlock2D(nn.Module):
             # pop res hidden states
             res_hidden_states = res_hidden_states_tuple[-1]
             res_hidden_states_tuple = res_hidden_states_tuple[:-1]
-            hidden_states = ops.concatenate()([hidden_states, res_hidden_states], dim=1)
+            hidden_states = ops.concatenate()(
+                [hidden_states, res_hidden_states], dim=-1
+            )
 
             hidden_states = resnet(hidden_states, temb)
 
@@ -3330,7 +3344,7 @@ class KUpBlock2D(nn.Module):
         res_hidden_states_tuple = res_hidden_states_tuple[-1]
         if res_hidden_states_tuple is not None:
             hidden_states = ops.concatenate()(
-                [hidden_states, res_hidden_states_tuple], dim=1
+                [hidden_states, res_hidden_states_tuple], dim=-1
             )
 
         for resnet in self.resnets:
@@ -3448,7 +3462,7 @@ class KCrossAttnUpBlock2D(nn.Module):
         res_hidden_states_tuple = res_hidden_states_tuple[-1]
         if res_hidden_states_tuple is not None:
             hidden_states = ops.concatenate()(
-                [hidden_states, res_hidden_states_tuple], dim=1
+                [hidden_states, res_hidden_states_tuple], dim=-1
             )
 
         for resnet, attn in zip(self.resnets, self.attentions):
