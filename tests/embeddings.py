@@ -104,12 +104,6 @@ class EmbeddingsTestCase(unittest.TestCase):
         op.name_parameter_tensor()
         Y = op.forward(X)
         Y = mark_output(Y, "Y")
-
-        constants = {
-            "arange": torch.arange(start=0, end=channels // 2, dtype=torch.float32).to(
-                x.device, x.dtype
-            )
-        }
         target = detect_target()
         module = compile_model(
             Y,
@@ -196,25 +190,6 @@ class EmbeddingsTestCase(unittest.TestCase):
         op.name_parameter_tensor()
         Y = op.forward(X, Resolution, AspectRatio)
         Y = mark_output(Y, "Y")
-
-        state_dict_ait.update(
-            {
-                "time_proj": torch.arange(
-                    start=0, end=256 // 2, dtype=torch.float32
-                ).to(x.device, x.dtype)
-            }
-        )
-        if use_additional_conditions:
-            state_dict_ait.update(
-                {
-                    "additional_condition_proj": torch.arange(
-                        start=0, end=256 // 2, dtype=torch.float32
-                    ).to(x.device, x.dtype),
-                    "additional_condition_proj_ar": torch.arange(
-                        start=0, end=256 // 2, dtype=torch.float32
-                    ).to(x.device, x.dtype),
-                }
-            )
 
         target = detect_target()
         module = compile_model(
@@ -536,14 +511,6 @@ class EmbeddingsTestCase(unittest.TestCase):
                 value = value.permute(0, 2, 3, 1).contiguous()
             value = value.to(timestep.device, timestep.dtype)
             state_dict_ait[key_ait] = value
-
-        state_dict_ait.update(
-            {
-                "arange": torch.arange(start=0, end=256 // 2, dtype=torch.float32).to(
-                    timestep.device, timestep.dtype
-                )
-            }
-        )
 
         with torch.inference_mode():
             y_pt: torch.Tensor = op.forward(

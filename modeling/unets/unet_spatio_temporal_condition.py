@@ -141,7 +141,6 @@ class UNetSpatioTemporalConditionModel(nn.Module):
             True,
             downscale_freq_shift=0,
             dtype=dtype,
-            arange_name="time_proj",
         )
         timestep_input_dim = block_out_channels[0]
 
@@ -154,7 +153,6 @@ class UNetSpatioTemporalConditionModel(nn.Module):
             True,
             downscale_freq_shift=0,
             dtype=dtype,
-            arange_name="add_time_proj",
         )
         self.add_embedding = TimestepEmbedding(
             projection_class_embeddings_input_dim, time_embed_dim, dtype=dtype

@@ -274,7 +274,12 @@ class UNetMotionModel(nn.Module):
 
         # time
         time_embed_dim = block_out_channels[0] * 4
-        self.time_proj = Timesteps(block_out_channels[0], True, 0, dtype=dtype)
+        self.time_proj = Timesteps(
+            block_out_channels[0],
+            True,
+            0,
+            dtype=dtype,
+        )
         timestep_input_dim = block_out_channels[0]
 
         self.time_embedding = TimestepEmbedding(
@@ -290,7 +295,10 @@ class UNetMotionModel(nn.Module):
 
         if addition_embed_type == "text_time":
             self.add_time_proj = Timesteps(
-                addition_time_embed_dim, True, 0, dtype=dtype
+                addition_time_embed_dim,
+                True,
+                0,
+                dtype=dtype,
             )
             self.add_embedding = TimestepEmbedding(
                 projection_class_embeddings_input_dim, time_embed_dim, dtype=dtype

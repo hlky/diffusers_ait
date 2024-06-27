@@ -211,14 +211,6 @@ class NormalizationTestCase(unittest.TestCase):
             value = value.to(timestep.device, timestep.dtype)
             state_dict_ait[key_ait] = value
 
-        state_dict_ait.update(
-            {
-                "arange": torch.arange(start=0, end=256 // 2, dtype=torch.float32).to(
-                    timestep.device, timestep.dtype
-                )
-            }
-        )
-
         with torch.inference_mode():
             outputs: Tuple[Tensor, Tensor, Tensor, Tensor, Tensor] = op.forward(
                 x, timestep, class_labels, hidden_dtype=timestep.dtype
@@ -339,25 +331,6 @@ class NormalizationTestCase(unittest.TestCase):
         else:
             resolution = None
             aspect_ratio = None
-
-        state_dict_ait.update(
-            {
-                "time_proj": torch.arange(
-                    start=0, end=256 // 2, dtype=torch.float32
-                ).to(timestep.device, timestep.dtype)
-            }
-        )
-        if use_additional_conditions:
-            state_dict_ait.update(
-                {
-                    "additional_condition_proj": torch.arange(
-                        start=0, end=256 // 2, dtype=torch.float32
-                    ).to(timestep.device, timestep.dtype),
-                    "additional_condition_proj_ar": torch.arange(
-                        start=0, end=256 // 2, dtype=torch.float32
-                    ).to(timestep.device, timestep.dtype),
-                }
-            )
 
         kwargs = {"resolution": resolution, "aspect_ratio": aspect_ratio}
         with torch.inference_mode():

@@ -592,7 +592,6 @@ class UNet2DConditionModel(nn.Module):
                 flip_sin_to_cos,
                 freq_shift,
                 dtype=dtype,
-                arange_name="time_proj",
             )
             timestep_input_dim = block_out_channels[0]
         else:
@@ -732,7 +731,6 @@ class UNet2DConditionModel(nn.Module):
                 flip_sin_to_cos,
                 freq_shift,
                 dtype=dtype,
-                arange_name="add_time_proj",
             )
             self.add_embedding = TimestepEmbedding(
                 projection_class_embeddings_input_dim, time_embed_dim, dtype=dtype
