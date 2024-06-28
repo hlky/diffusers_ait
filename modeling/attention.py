@@ -2,7 +2,7 @@ from typing import Any, Dict, Optional
 
 from aitemplate.compiler import ops
 
-from aitemplate.frontend import nn, Tensor
+from aitemplate.frontend import IntVar, nn, Tensor
 
 from .activations import ApproximateGELU, GEGLU, GELU
 from .attention_processor import Attention
@@ -13,6 +13,14 @@ from .normalization import (
     AdaLayerNormZero,
     RMSNorm,
 )
+
+
+def get_shape(x):
+    shape = [
+        it.value() if not isinstance(it, IntVar) else it.symbolic_value()
+        for it in x._attrs["shape"]
+    ]
+    return shape
 
 
 class GatedSelfAttentionDense(nn.Module):
@@ -518,6 +526,7 @@ class TemporalBasicTransformerBlock(nn.Module):
             [batch_size, num_frames, seq_length, channels],
         )
         # hidden_states = hidden_states.permute(0, 2, 1, 3)
+        hidden_states = ops.permute0213()(hidden_states)
         hidden_states = ops.reshape()(
             hidden_states, [batch_size * seq_length, num_frames, channels]
         )
