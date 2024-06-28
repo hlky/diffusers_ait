@@ -1,4 +1,5 @@
 from functools import partial
+import math
 from typing import cast, Optional, Tuple, Union
 
 from aitemplate.compiler import ops
@@ -26,6 +27,9 @@ from .upsampling import (  # noqa
     Upsample2D,
     upsample_2d,
 )
+
+def sigmoid(x):
+    return 1 / (1 + math.exp(-x))
 
 
 def get_shape(x):
@@ -828,25 +832,22 @@ class AlphaBlender(nn.Module):
             raise ValueError(f"merge_strategy needs to be in {self.strategies}")
 
         if self.merge_strategy == "fixed":
-            self.mix_factor = Tensor(
-                shape=[1], value=alpha, dtype=dtype, name="mix_factor"
-            )
+            self.mix_factor = alpha
         elif (
             self.merge_strategy == "learned"
             or self.merge_strategy == "learned_with_images"
         ):
-            self.mix_factor = nn.Parameter(
-                shape=[1], name="mix_factor", value=alpha, dtype=dtype
-            )
+            # originally nn.Parameter
+            self.mix_factor = alpha
         else:
             raise ValueError(f"Unknown merge strategy {self.merge_strategy}")
 
     def get_alpha(self, image_only_indicator: Tensor, ndims: int) -> Tensor:
         if self.merge_strategy == "fixed":
-            alpha = cast(Tensor, self.mix_factor)
+            alpha = self.mix_factor
 
         elif self.merge_strategy == "learned":
-            alpha = ops.sigmoid(cast(nn.Parameter, self.mix_factor).tensor())
+            alpha = sigmoid(self.mix_factor)
 
         elif self.merge_strategy == "learned_with_images":
             if image_only_indicator is None:
@@ -857,12 +858,8 @@ class AlphaBlender(nn.Module):
             alpha = ops.where()(
                 image_only_indicator,
                 1.0,
-                ops.expand()(
-                    ops.unsqueeze(-1)(
-                        ops.sigmoid(cast(nn.Parameter, self.mix_factor).tensor())
-                    ),
-                    [-1, batch],
-                ),
+                sigmoid(self.mix_factor),
+                dtype="float16"
             )
 
             # (batch, frames, height, width, channel)
@@ -892,7 +889,8 @@ class AlphaBlender(nn.Module):
         image_only_indicator: Optional[Tensor] = None,
     ) -> Tensor:
         alpha = self.get_alpha(image_only_indicator, ndims=len(ops.size()(x_spatial)))
-        alpha = ops.cast()(alpha, x_spatial.dtype())
+        if isinstance(alpha, Tensor):
+            alpha = ops.cast()(alpha, x_spatial.dtype())
 
         if self.switch_spatial_to_temporal_mix:
             alpha = 1.0 - alpha
