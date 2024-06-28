@@ -370,10 +370,13 @@ class UNetSpatioTemporalConditionModel(nn.Module):
         # 2. pre-process
         sample = self.conv_in(sample)
 
-        image_only_indicator = ops.full()(
-            [batch_size._attrs["int_var"], num_frames._attrs["int_var"]],
-            fill_value=0.0,
-            dtype="bool",
+        image_only_indicator = ops.cast()(
+            ops.full()(
+                [batch_size._attrs["int_var"], num_frames._attrs["int_var"]],
+                fill_value=0.0,
+                dtype="float16",
+            ),
+            "bool",
         )
 
         down_block_res_samples = (sample,)
