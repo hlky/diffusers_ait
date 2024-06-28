@@ -107,7 +107,7 @@ def get_timestep_embedding(
 
     half_dim = embedding_dim // 2
 
-    exponent = (-ops.log(max_period)) * ops.arange(0, half_dim, 1)()
+    exponent = (-math.log(max_period)) * ops.arange(0, half_dim, 1)()
 
     exponent = exponent * (1.0 / (half_dim - downscale_freq_shift))
 
