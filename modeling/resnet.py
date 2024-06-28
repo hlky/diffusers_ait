@@ -6,7 +6,7 @@ from aitemplate.compiler import ops
 
 from aitemplate.compiler.base import IntVarTensor
 
-from aitemplate.frontend import nn, Tensor
+from aitemplate.frontend import IntVar, nn, Tensor
 
 from .activations import get_activation
 from .attention_processor import SpatialNorm
@@ -28,12 +28,20 @@ from .upsampling import (  # noqa
     upsample_2d,
 )
 
+
 def sigmoid(x):
     return 1 / (1 + math.exp(-x))
 
 
 def get_shape(x):
-    shape = [it.value() for it in x._attrs["shape"]]
+    shape = [
+        (
+            it.value()
+            if not isinstance(it, IntVar)
+            else [it.lower_bound(), it.upper_bound()]
+        )
+        for it in x._attrs["shape"]
+    ]
     return shape
 
 
@@ -572,28 +580,32 @@ class TemporalConvLayer(nn.Module):
 
         # NOTE: using SiLU as a module avoids complicated weight mapping due to nn.Sequential ordering
         # conv layers
+
+        kernel_size = (3, 1, 1)
+        padding = [k // 2 for k in kernel_size]
+
         self.conv1 = nn.Sequential(
             nn.GroupNorm(norm_num_groups, in_dim, dtype=dtype),
             SiLU(),
-            nn.Conv3d(in_dim, out_dim, (3, 1, 1), padding=(1, 0, 0), dtype=dtype),
+            nn.Conv3d(in_dim, out_dim, kernel_size, padding=padding, dtype=dtype),
         )
         self.conv2 = nn.Sequential(
             nn.GroupNorm(norm_num_groups, out_dim, dtype=dtype),
             SiLU(),
             nn.Dropout(dropout),
-            nn.Conv3d(out_dim, in_dim, (3, 1, 1), padding=(1, 0, 0), dtype=dtype),
+            nn.Conv3d(out_dim, in_dim, kernel_size, padding=padding, dtype=dtype),
         )
         self.conv3 = nn.Sequential(
             nn.GroupNorm(norm_num_groups, out_dim, dtype=dtype),
             SiLU(),
             nn.Dropout(dropout),
-            nn.Conv3d(out_dim, in_dim, (3, 1, 1), padding=(1, 0, 0), dtype=dtype),
+            nn.Conv3d(out_dim, in_dim, kernel_size, padding=padding, dtype=dtype),
         )
         self.conv4 = nn.Sequential(
             nn.GroupNorm(norm_num_groups, out_dim, dtype=dtype),
             SiLU(),
             nn.Dropout(dropout),
-            nn.Conv3d(out_dim, in_dim, (3, 1, 1), padding=(1, 0, 0), dtype=dtype),
+            nn.Conv3d(out_dim, in_dim, kernel_size, padding=padding, dtype=dtype),
         )
 
     def forward(self, hidden_states: Tensor, num_frames: int = 1) -> Tensor:
@@ -773,7 +785,7 @@ class SpatioTemporalResBlock(nn.Module):
         hidden_states = self.spatial_res_block(hidden_states, temb)
 
         batch_frames, height, width, channels = ops.size()(hidden_states)
-        batch_size = batch_frames / num_frames
+        batch_size = batch_frames._attrs["int_var"] / num_frames._attrs["int_var"]
 
         hidden_states_mix = ops.reshape()(
             ops.unsqueeze(0)(hidden_states),
@@ -856,10 +868,7 @@ class AlphaBlender(nn.Module):
                 )
             batch = ops.size()(image_only_indicator, dim=1)
             alpha = ops.where()(
-                image_only_indicator,
-                1.0,
-                sigmoid(self.mix_factor),
-                dtype="float16"
+                image_only_indicator, 1.0, sigmoid(self.mix_factor), dtype="float16"
             )
 
             # (batch, frames, height, width, channel)
