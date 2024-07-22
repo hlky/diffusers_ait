@@ -40,7 +40,6 @@ class Upsample1D(nn.Module):
 
         self.conv = None
         if use_conv_transpose:
-            raise NotImplementedError("nn.ConvTranspose1d not implemented.")
             self.conv = nn.ConvTranspose1d(channels, self.out_channels, 4, 2, 1)
         elif use_conv:
             self.conv = nn.Conv1d(
@@ -48,12 +47,11 @@ class Upsample1D(nn.Module):
             )
 
     def forward(self, inputs: Tensor) -> Tensor:
-        raise NotImplementedError("upsampling1d not implemented.")
         assert inputs.shape()[-1] == self.channels
         if self.use_conv_transpose and self.conv is not None:
             return self.conv(inputs)
 
-        outputs = ops.upsampling2d(scale_factor=2.0, mode="nearest")(inputs)
+        outputs = ops.upsampling1d(scale_factor=2.0, mode="nearest")(inputs)
 
         if self.use_conv and self.conv is not None:
             outputs = self.conv(outputs)
