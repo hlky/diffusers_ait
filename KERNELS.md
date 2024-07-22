@@ -13,9 +13,6 @@ only supports single reduction axes.
 
 ### AvgPool1d
 
-### ConvTranspose1d
-Probably can use Conv2d similar to Conv1d implementation.
-
 ### upsampling1d
 Maybe input can be padded to use upsampling2d
 
@@ -28,9 +25,6 @@ Maybe input can be padded to use upsampling2d
 
 ### `PixelUnshuffle`/`PixelShuffle`
 - `StableCascadeUNet`
-
-### arange
-Not required but nice to have. Currently any used arange are provided with model constants at runtime. Would avoid conflicts/workarounds in `Timesteps`.
 
 ### meshgrid
 Not required but nice to have. Would allow `PosEmbed` (various Transformer2dModel) to be calculated internally rather than provided as an additional input.
