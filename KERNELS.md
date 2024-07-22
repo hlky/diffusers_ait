@@ -11,9 +11,6 @@ aka `torch.linalg.vector_norm` only supports single reduction axes.
 ### ops.reduce_*
 only supports single reduction axes.
 
-### upsampling1d
-Maybe input can be padded to use upsampling2d
-
 ### Pad mode reflect
 - `Downsample1d`/`Upsample1d` ->
     - `UNetMidBlock1D`
