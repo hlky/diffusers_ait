@@ -11,8 +11,6 @@ aka `torch.linalg.vector_norm` only supports single reduction axes.
 ### ops.reduce_*
 only supports single reduction axes.
 
-### AvgPool1d
-
 ### upsampling1d
 Maybe input can be padded to use upsampling2d
 
