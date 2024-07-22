@@ -18,9 +18,6 @@ only supports single reduction axes.
     - `DownBlock1D`
     - `AttnUpBlock1D`
 
-### `PixelUnshuffle`/`PixelShuffle`
-- `StableCascadeUNet`
-
 ### meshgrid
 Not required but nice to have. Would allow `PosEmbed` (various Transformer2dModel) to be calculated internally rather than provided as an additional input.
 
