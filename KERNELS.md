@@ -11,13 +11,6 @@ aka `torch.linalg.vector_norm` only supports single reduction axes.
 ### ops.reduce_*
 only supports single reduction axes.
 
-### Pad mode reflect
-- `Downsample1d`/`Upsample1d` ->
-    - `UNetMidBlock1D`
-    - `AttnDownBlock1D`
-    - `DownBlock1D`
-    - `AttnUpBlock1D`
-
 ### meshgrid
 Not required but nice to have. Would allow `PosEmbed` (various Transformer2dModel) to be calculated internally rather than provided as an additional input.
 
