@@ -11,9 +11,6 @@ aka `torch.linalg.vector_norm` only supports single reduction axes.
 ### ops.reduce_*
 only supports single reduction axes.
 
-### meshgrid
-Not required but nice to have. Would allow `PosEmbed` (various Transformer2dModel) to be calculated internally rather than provided as an additional input.
-
 ### Other
 #### Cutlass error
 - `PixArtAlphaCombinedTimestepSizeEmbeddings` - `use_additional_conditions=True`
