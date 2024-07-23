@@ -539,15 +539,13 @@ class StableCascadeUNet(nn.Module):
         half_dim = self.timestep_ratio_embedding_dim // 2
 
         emb = math.log(max_positions) / (half_dim - 1)
-        emb = Tensor([half_dim], name="timestep_ratio")
+        emb = ops.arange(0, half_dim, 1)()
         emb = ops.exp(ops.cast()(emb, "float32") * -emb)
         emb = ops.unsqueeze(1)(r) * ops.unsqueeze(0)(emb)
         emb = ops.concatenate()([ops.sin(emb), ops.cos(emb)], dim=1)
 
         if self.timestep_ratio_embedding_dim % 2 == 1:  # zero pad
-            padding = ops.full()([0, 1], 0.0, dtype=self.dtype)
-            padding._attrs["shape"][0] = emb._attrs["shape"][0]
-            emb = ops.concatenate()([emb, padding], dim=-1)
+            emb = ops.pad((0, 1), mode="constant")(emb)
 
         return ops.cast()(emb, dtype=r.dtype())
 

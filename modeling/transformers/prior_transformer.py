@@ -332,27 +332,15 @@ class PriorTransformer(nn.Module):
             additional_embeddings_len + ops.size()(proj_embeddings, dim=1) + 1
         )
         if ops.size()(positional_embeddings, dim=1) < ops.size()(hidden_states, dim=1):
-            padding = ops.full()(
-                [0, additional_embeddings_len, 0, 0], 0.0, dtype=self.dtype
-            )
-            padding._attrs["shape"][0] = positional_embeddings._attrs["shape"][0]
-            padding._attrs["shape"][2] = positional_embeddings._attrs["shape"][2]
-            padding._attrs["shape"][3] = positional_embeddings._attrs["shape"][3]
-            positional_embeddings = ops.concatenate()(
-                [positional_embeddings, padding], dim=1
-            )
-            if self.prd_embedding is not None:
-                padding = ops.full()(
-                    [0, 0, ops.size()(self.prd_embedding.tensor(), dim=1), 0],
-                    0.0,
-                    dtype=self.dtype,
-                )
-                padding._attrs["shape"][0] = positional_embeddings._attrs["shape"][0]
-                padding._attrs["shape"][1] = positional_embeddings._attrs["shape"][1]
-                padding._attrs["shape"][3] = positional_embeddings._attrs["shape"][3]
-                positional_embeddings = ops.concatenate()(
-                    [positional_embeddings, padding], dim=2
-                )
+            positional_embeddings = ops.pad(
+                (
+                    0,
+                    0,
+                    additional_embeddings_len.upper_bound(),  # NOTE: verify
+                    1 if self.prd_embedding is not None else 0,
+                ),
+                value=0.0,
+            )(positional_embeddings)
 
         hidden_states = hidden_states + positional_embeddings
 
