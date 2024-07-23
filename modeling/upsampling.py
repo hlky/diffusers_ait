@@ -354,24 +354,32 @@ class KUpsample2D(nn.Module):
         """
         # NOTE/TODO: name may interact with others
         kernel_1d = Tensor([1, 4], name="kernel")
-        self.pad = kernel_1d.shape()[1] // 2 - 1
+        self.pad = ops.size()(kernel_1d, dim=1)["int_var"].upper_bound() / 2 - 1
         self.kernel = kernel_1d
 
     def forward(self, inputs: Tensor) -> Tensor:
-        raise NotImplementedError("pad mode 'reflect'")
-        inputs = F.pad(inputs, ((self.pad + 1) // 2,) * 4, self.pad_mode)
-        weight = inputs.new_zeros(
-            [
-                inputs.shape[1],
-                inputs.shape[1],
-                self.kernel.shape[0],
-                self.kernel.shape[1],
-            ]
+        raise NotImplementedError(f"weight assignment")
+        inputs = ops.pad(((self.pad + 1) // 2,) * 4, mode=self.pad_mode)(inputs)
+        inputs_dim1 = ops.size()(inputs, dim=1)
+        kernel_dim0, kernel_dim1 = ops.size()(self.kernel)
+        weight = ops.full()(
+            inputs_dim1,
+            inputs_dim1,
+            kernel_dim0,
+            kernel_dim1,
+            fill_value=0.0,
+            dtype=inputs.dtype(),
         )
-        indices = torch.arange(inputs.shape[1], device=inputs.device)
-        kernel = self.kernel.to(weight)[None, :].expand(inputs.shape[1], -1, -1)
+        indices = ops.arange(0, inputs_dim1["int_var"], 1)()
+        kernel = ops.expand()(
+            ops.unsqueeze(0)(ops.cast()(self.kernel, weight.dtype())),
+            inputs_dim1,
+            -1,
+            -1,
+        )
+        # TODO
         weight[indices, indices] = kernel
-        return F.conv_transpose2d(inputs, weight, stride=2, padding=self.pad * 2 + 1)
+        return ops.transposed_conv2d(stride=2, pad=self.pad * 2 + 1)(inputs, weight)
 
 
 def upfirdn2d_native(

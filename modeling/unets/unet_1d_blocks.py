@@ -335,44 +335,71 @@ _kernels = {
 class Downsample1d(nn.Module):
     def __init__(self, kernel: str = "linear", pad_mode: str = "reflect"):
         super().__init__()
-        raise NotImplementedError("pad mode reflect")
+        raise NotImplementedError("kernel selection")
         self.pad_mode = pad_mode
         kernel_1d = torch.tensor(_kernels[kernel])
-        self.pad = kernel_1d.shape[0] // 2 - 1
-        self.register_buffer("kernel", kernel_1d)
+        self.pad = ops.size()(kernel_1d, dim=0)["int_var"].upper_bound() // 2 - 1
+        self.kernel = kernel_1d
 
     def forward(self, hidden_states: Tensor) -> Tensor:
-        raise NotImplementedError("pad mode reflect")
-        hidden_states = F.pad(hidden_states, (self.pad,) * 2, self.pad_mode)
-        weight = hidden_states.new_zeros(
-            [hidden_states.shape[1], hidden_states.shape[1], self.kernel.shape[0]]
+        raise NotImplementedError(f"weight assignment")
+        hidden_states = ops.pad((self.pad,) * 2, mode=self.pad_mode)(hidden_states)
+        hidden_states_dim1 = ops.size()(hidden_states, dim=1)
+        kernel_dim0 = ops.size()(self.kernel, dim=0)
+        weight = ops.full()(
+            hidden_states_dim1,
+            hidden_states_dim1,
+            kernel_dim0,
+            fill_value=0.0,
+            dtype=hidden_states.dtype(),
         )
-        indices = torch.arange(hidden_states.shape[1], device=hidden_states.device)
-        kernel = self.kernel.to(weight)[None, :].expand(hidden_states.shape[1], -1)
+        indices = ops.arange(0, hidden_states_dim1["int_var"], 1)()
+        kernel = ops.expand()(
+            ops.unsqueeze(0)(ops.cast()(self.kernel, weight.dtype())), hidden_states, -1
+        )
+        # TODO
         weight[indices, indices] = kernel
-        return F.conv1d(hidden_states, weight, stride=2)
+        # TODO: nicer interface for conv1d
+        return ops.squeeze(2)(
+            ops.conv2d(stride=(2, 1), pad=(0, 0), dilate=(1, 1))(
+                ops.unsqueeze(2)(hidden_states), ops.unsqueeze(2)(weight)
+            )
+        )
 
 
 class Upsample1d(nn.Module):
     def __init__(self, kernel: str = "linear", pad_mode: str = "reflect"):
         super().__init__()
-        raise NotImplementedError("pad mode reflect")
+        raise NotImplementedError("kernel selection")
         self.pad_mode = pad_mode
         kernel_1d = torch.tensor(_kernels[kernel]) * 2
-        self.pad = kernel_1d.shape[0] // 2 - 1
-        self.register_buffer("kernel", kernel_1d)
+        self.pad = ops.size()(kernel_1d, dim=0)["int_var"].upper_bound() // 2 - 1
+        self.kernel = kernel_1d
 
     def forward(self, hidden_states: Tensor, temb: Optional[Tensor] = None) -> Tensor:
-        raise NotImplementedError("pad mode reflect, conv_transpose1d")
-        hidden_states = F.pad(hidden_states, ((self.pad + 1) // 2,) * 2, self.pad_mode)
-        weight = hidden_states.new_zeros(
-            [hidden_states.shape[1], hidden_states.shape[1], self.kernel.shape[0]]
+        hidden_states = ops.pad(((self.pad + 1) // 2,) * 2, mode=self.pad_mode)(
+            hidden_states
         )
-        indices = torch.arange(hidden_states.shape[1], device=hidden_states.device)
-        kernel = self.kernel.to(weight)[None, :].expand(hidden_states.shape[1], -1)
+        hidden_states_dim1 = ops.size()(hidden_states, dim=1)
+        kernel_dim0 = ops.size()(self.kernel, dim=0)
+        weight = ops.full()(
+            hidden_states_dim1,
+            hidden_states_dim1,
+            kernel_dim0,
+            fill_value=0.0,
+            dtype=hidden_states.dtype(),
+        )
+        indices = ops.arange(0, hidden_states_dim1["int_var"], 1)()
+        kernel = ops.expand()(
+            ops.unsqueeze(0)(ops.cast()(self.kernel, weight.dtype())), hidden_states, -1
+        )
+        # TODO
         weight[indices, indices] = kernel
-        return F.conv_transpose1d(
-            hidden_states, weight, stride=2, padding=self.pad * 2 + 1
+        # TODO nicer interface for conv_transpose1d
+        return ops.squeeze(2)(
+            ops.transposed_conv2d(
+                stride=(2, 1), pad=(self.pad * 2 + 1, 0), dilate=(1, 1)
+            )(ops.unsqueeze(2)(hidden_states), ops.unsqueeze(2)(weight))
         )
 
 

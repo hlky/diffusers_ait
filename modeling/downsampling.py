@@ -50,7 +50,6 @@ class Downsample1D(nn.Module):
                 bias=True,
             )
         else:
-            raise NotImplementedError("AvgPool1d not implemented.")
             assert self.channels == self.out_channels
             self.conv = nn.AvgPool1d(kernel_size=stride, stride=stride)
 
@@ -280,30 +279,39 @@ class KDownsample2D(nn.Module):
     def __init__(self, pad_mode: str = "reflect"):
         super().__init__()
         self.pad_mode = pad_mode
+        # TODO: kernel
         """
         torch.tensor([[1 / 8, 3 / 8, 3 / 8, 1 / 8]])
         tensor([[0.1250, 0.3750, 0.3750, 0.1250]])
         kernel_1d.T @ kernel_1d
         """
         kernel_1d = Tensor([1, 4], name="kernel")
-        self.pad = ops.size()(kernel_1d, dim=1) / 2 - 1
+        self.pad = ops.size()(kernel_1d, dim=1)["int_var"].upper_bound() / 2 - 1
         self.kernel = kernel_1d
 
     def forward(self, inputs: Tensor) -> Tensor:
-        raise NotImplementedError("pad mode 'reflect'")
-        inputs = F.pad(inputs, (self.pad,) * 4, self.pad_mode)
-        weight = inputs.new_zeros(
-            [
-                inputs.shape[1],
-                inputs.shape[1],
-                self.kernel.shape[0],
-                self.kernel.shape[1],
-            ]
+        raise NotImplementedError(f"weight assignment")
+        inputs = ops.pad((self.pad,) * 4, mode=self.pad_mode)(inputs)
+        inputs_dim1 = ops.size()(inputs, dim=1)
+        kernel_dim0, kernel_dim1 = ops.size()(self.kernel)
+        weight = ops.full()(
+            inputs_dim1,
+            inputs_dim1,
+            kernel_dim0,
+            kernel_dim1,
+            fill_value=0.0,
+            dtype=inputs.dtype(),
         )
-        indices = torch.arange(inputs.shape[1], device=inputs.device)
-        kernel = self.kernel.to(weight)[None, :].expand(inputs.shape[1], -1, -1)
+        indices = ops.arange(0, inputs_dim1["int_var"], 1)()
+        kernel = ops.expand()(
+            ops.unsqueeze(0)(ops.cast()(self.kernel, weight.dtype())),
+            inputs_dim1,
+            -1,
+            -1,
+        )
+        # TODO
         weight[indices, indices] = kernel
-        return F.conv2d(inputs, weight, stride=2)
+        return ops.conv2d(stride=2, pad=0)(inputs, weight)
 
 
 def downsample_2d(

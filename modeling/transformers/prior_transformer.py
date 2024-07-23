@@ -164,6 +164,7 @@ class PriorTransformer(nn.Module):
 
         self.proj_to_clip_embeddings = nn.Linear(inner_dim, clip_embed_dim, dtype=dtype)
 
+        raise NotImplementedError("triu")
         # causal_attention_mask = torch.full(
         #     [
         #         num_embeddings + additional_embeddings,
@@ -356,17 +357,19 @@ class PriorTransformer(nn.Module):
         hidden_states = hidden_states + positional_embeddings
 
         if attention_mask is not None:
-            raise NotImplementedError("better pad interface")
-            attention_mask = (1 - attention_mask.to(hidden_states.dtype)) * -10000.0
-            attention_mask = F.pad(
-                attention_mask, (0, self.additional_embeddings), value=0.0
-            )
             attention_mask = (
-                attention_mask[:, None, :] + self.causal_attention_mask
-            ).to(hidden_states.dtype)
-            attention_mask = attention_mask.repeat_interleave(
-                self.num_attention_heads, dim=0
+                1 - ops.cast()(attention_mask, hidden_states.dtype())
+            ) * -10000.0
+            attention_mask = ops.pad(
+                (0, self.additional_embeddings), mode="constant", value=0.0
+            )(attention_mask)
+            attention_mask = ops.cast()(
+                ops.unsqueeze(1)(attention_mask) + self.causal_attention_mask,
+                hidden_states.dtype(),
             )
+            attention_mask = ops.repeat_interleave(
+                repeats=self.num_attention_heads, dim=0
+            )(attention_mask)
 
         if self.norm_in is not None:
             hidden_states = self.norm_in(hidden_states)

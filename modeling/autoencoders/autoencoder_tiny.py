@@ -185,7 +185,7 @@ class AutoencoderTiny(nn.Module):
         self.enable_tiling(False)
 
     def _tiled_encode(self, x: Tensor) -> Tensor:
-        raise NotImplementedError("meshgrid")
+        raise NotImplementedError("TODO")
         r"""Encode a batch of images using a tiled encoder.
 
         When this option is enabled, the VAE will split the input tensor into tiles to compute encoding in several
@@ -247,7 +247,7 @@ class AutoencoderTiny(nn.Module):
         return out
 
     def _tiled_decode(self, x: Tensor) -> Tensor:
-        raise NotImplementedError("meshgrid")
+        raise NotImplementedError("TODO")
         r"""Encode a batch of images using a tiled encoder.
 
         When this option is enabled, the VAE will split the input tensor into tiles to compute encoding in several
