@@ -111,7 +111,7 @@ def get_timestep_embedding(
 
     exponent = exponent * (1.0 / (half_dim - downscale_freq_shift))
 
-    emb = ops.exp(exponent)
+    emb = ops.cast()(ops.exp(exponent), timesteps.dtype())
     emb = ops.reshape()(timesteps, [-1, 1]) * ops.reshape()(emb, [1, -1])
 
     # scale embeddings
