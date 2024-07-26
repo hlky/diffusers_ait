@@ -261,9 +261,8 @@ class GlobalResponseNorm(nn.Module):
         self.beta = nn.Parameter([1, 1, 1, dim], dtype=dtype)
 
     def forward(self, x: Tensor):
-        gx = ops.unsqueeze(0)(
+        gx = ops.unsqueeze(1)(
             ops.vector_norm(dim=1, keepdim=True)(ops.vector_norm(dim=1)(x))
         )
-        print(get_shape(gx))
         nx = gx / (ops.reduce_mean(dim=-1, keepdim=True)(gx) + 1e-6)
         return self.gamma.tensor() * (x * nx) + self.beta.tensor() + x
