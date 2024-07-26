@@ -1,5 +1,5 @@
-from functools import partial
 import math
+from functools import partial
 from typing import cast, Optional, Tuple, Union
 
 from aitemplate.compiler import ops

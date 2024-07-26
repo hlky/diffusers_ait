@@ -2,15 +2,6 @@
 
 Missing or incomplete AIT kernels are documented here, optionally detailing which models are blocked.
 
-### ops.vector_norm
-aka `torch.linalg.vector_norm` only supports single reduction axes.
-- `normalization`.`GlobalResponseNorm` -> 
-    - `Stable Cascade`/`Wuerstchen`
-    - `UVit`
-
-### ops.reduce_*
-only supports single reduction axes.
-
 ### Other
 #### Cutlass error
 - `PixArtAlphaCombinedTimestepSizeEmbeddings` - `use_additional_conditions=True`

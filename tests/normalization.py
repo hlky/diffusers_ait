@@ -703,12 +703,12 @@ class NormalizationTestCase(unittest.TestCase):
             dtype="float16",
         )
 
-    # def test_global_response_norm(self):
-    #     self._test_global_response_norm(
-    #         shape=[1, 64, 64, 32],
-    #         tolerance=1e-3,
-    #         dtype="float16",
-    #     )
+    def test_global_response_norm(self):
+        self._test_global_response_norm(
+            shape=[1, 64, 64, 32],
+            tolerance=1e-3,
+            dtype="float16",
+        )
 
 
 if __name__ == "__main__":
