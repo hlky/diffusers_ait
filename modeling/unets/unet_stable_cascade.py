@@ -18,10 +18,7 @@ class SDCascadeLayerNorm(nn.LayerNorm):
         super().__init__(*args, **kwargs)
 
     def forward(self, x: Tensor):
-        # TODO: check
-        x = ops.permute()(x, [0, 3, 1, 2])
-        x = super().forward(x)
-        return ops.permute()(x, [0, 2, 3, 1])
+        return super().forward(x)
 
 
 class SDCascadeTimestepBlock(nn.Module):
@@ -36,15 +33,15 @@ class SDCascadeTimestepBlock(nn.Module):
     def forward(self, x, t):
         t = ops.chunk()(t, len(self.conds) + 1, dim=1)
         a, b = ops.chunk()(
-            ops.unsqueeze(-1)(ops.unsqueeze(-1)(self.mapper(t[0]))), 2, dim=1
+            ops.unsqueeze(1)(ops.unsqueeze(1)(self.mapper(t[0]))), 2, dim=-1
         )
         for i, c in enumerate(self.conds):
             ac, bc = ops.chunk()(
-                ops.unsqueeze(-1)(
-                    ops.unsqueeze(-1)(getattr(self, f"mapper_{c}")(t[i + 1]))
+                ops.unsqueeze(1)(
+                    ops.unsqueeze(1)(getattr(self, f"mapper_{c}")(t[i + 1]))
                 ),
                 2,
-                dim=1,
+                dim=-1,
             )
             a, b = a + ac, b + bc
         return x * (1 + a) + b
@@ -76,7 +73,7 @@ class SDCascadeResBlock(nn.Module):
         x_res = x
         x = self.norm(self.depthwise(x))
         if x_skip is not None:
-            x = ops.concatenate()([x, x_skip], dim=1)
+            x = ops.concatenate()([x, x_skip], dim=-1)
         x = self.channelwise(x)
         return x + x_res
 
@@ -106,9 +103,11 @@ class SDCascadeAttnBlock(nn.Module):
         norm_x = self.norm(x)
         if self.self_attn:
             batch_size, _, _, channel = ops.size()(x)
+            kv_0 = ops.permute021()(ops.reshape()(norm_x, [batch_size, channel, -1]))
+            kv_0._attrs["shape"][0] = kv._attrs["shape"][0]
             kv = ops.concatenate()(
                 [
-                    ops.permute021()(ops.reshape()(norm_x, [batch_size, channel, -1])),
+                    kv_0,
                     kv,
                 ],
                 dim=1,
@@ -535,19 +534,20 @@ class StableCascadeUNet(nn.Module):
         self.gradient_checkpointing = False
 
     def get_timestep_ratio_embedding(self, timestep_ratio: Tensor, max_positions=10000):
-        r = timestep_ratio * max_positions
+        r = ops.cast()(timestep_ratio * max_positions, "float32")
         half_dim = self.timestep_ratio_embedding_dim // 2
 
         emb = math.log(max_positions) / (half_dim - 1)
         emb = ops.arange(0, half_dim, 1)()
-        emb = ops.exp(ops.cast()(emb, "float32") * -emb)
+        emb = ops.cast()(emb, "float32")
+        emb = ops.exp(emb * -emb)
         emb = ops.unsqueeze(1)(r) * ops.unsqueeze(0)(emb)
         emb = ops.concatenate()([ops.sin(emb), ops.cos(emb)], dim=1)
 
         if self.timestep_ratio_embedding_dim % 2 == 1:  # zero pad
             emb = ops.pad((0, 1), mode="constant")(emb)
 
-        return ops.cast()(emb, dtype=r.dtype())
+        return ops.cast()(emb, dtype=timestep_ratio.dtype())
 
     def get_clip_embeddings(
         self,
@@ -560,8 +560,8 @@ class StableCascadeUNet(nn.Module):
         clip_txt_pool = ops.reshape()(
             self.clip_txt_pooled_mapper(clip_txt_pooled),
             [
-                ops.size()(clip_txt_pooled, dim=0),
-                ops.size()(clip_txt_pooled, dim=1) * self.clip_seq,
+                ops.size()(clip_txt_pooled, dim=0)._attrs["int_var"],
+                ops.size()(clip_txt_pooled, dim=1)._attrs["int_var"] * self.clip_seq,
                 -1,
             ],
         )
@@ -572,8 +572,8 @@ class StableCascadeUNet(nn.Module):
             clip_img = ops.reshape()(
                 self.clip_img_mapper(clip_img),
                 [
-                    ops.size()(clip_img, dim=0),
-                    ops.size()(clip_img, dim=1) * self.clip_seq,
+                    ops.size()(clip_img, dim=0)._attrs["int_var"],
+                    ops.size()(clip_img, dim=1)._attrs["int_var"] * self.clip_seq,
                     -1,
                 ],
             )
@@ -655,7 +655,7 @@ class StableCascadeUNet(nn.Module):
     ):
         if pixels is None:
             pixels = ops.full()(
-                [ops.size()(sample, dim=0), 3, 8, 8],
+                [ops.size()(sample, dim=0)._attrs["int_var"], 3, 8, 8],
                 fill_value=0.0,
                 dtype=sample.dtype(),
             )
@@ -670,7 +670,7 @@ class StableCascadeUNet(nn.Module):
             else:
                 cond = None
             t_cond = cond or ops.full()(
-                ops.size()(timestep_ratio),
+                [dim._attrs["int_var"] for dim in ops.size()(timestep_ratio)],
                 fill_value=0.0,
                 dtype=timestep_ratio_embed.dtype(),
             )
