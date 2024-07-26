@@ -105,14 +105,13 @@ def load_config(hf_hub: str, subfolder: Optional[str] = None):
     except Exception as e:
         print(e)
     config = j
-    _class_name = config.get("_class_name", "")
+    _class_name = config.pop("_class_name", "")
     _diffusers_version = config.pop("_diffusers_version")
     remapped_class = _CLASS_REMAPPING_DICT.get(_class_name, {}).get(
         config.get("norm_type", None), None
     )
     if remapped_class:
         _class_name = remapped_class
-        config["_class_name"] = _class_name
     print(_class_name)
     classes = _CLASS_MAPPING.get(_class_name, None)
     if classes:
