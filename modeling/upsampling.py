@@ -260,7 +260,7 @@ class FirUpsample2D(nn.Module):
                 Tensor of the shape `[N, H * factor, W * factor, C]`, and same
                 datatype as `hidden_states`.
         """
-        raise NotImplementedError("FirUpsample2d not implemented.")
+        raise NotImplementedError("torch.outer, torch.flip")
 
         assert isinstance(factor, int) and factor >= 1
 
@@ -389,7 +389,7 @@ def upfirdn2d_native(
     down: int = 1,
     pad: Tuple[int, int] = (0, 0),
 ) -> Tensor:
-    raise NotImplementedError("upfirdn2d_native")
+    raise NotImplementedError("torch.flip")
     up_x = up_y = up
     down_x = down_y = down
     pad_x0 = pad_y0 = pad[0]
