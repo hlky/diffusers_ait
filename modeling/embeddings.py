@@ -763,7 +763,7 @@ class SiLU(nn.Module):
         self.op = ops.silu
 
     def forward(self, x: Tensor):
-        return ops.silu(x)
+        return self.op(x)
 
 
 class GELU(nn.Module):
@@ -772,7 +772,7 @@ class GELU(nn.Module):
         self.op = ops.gelu
 
     def forward(self, x: Tensor):
-        return ops.gelu(x)
+        return self.op(x)
 
 
 class ImageHintTimeEmbedding(nn.Module):
