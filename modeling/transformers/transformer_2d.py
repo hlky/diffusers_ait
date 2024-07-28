@@ -373,7 +373,6 @@ class Transformer2DModel(nn.Module):
         attention_mask: Optional[Tensor] = None,
         encoder_attention_mask: Optional[Tensor] = None,
         return_dict: bool = True,
-        pos_embed: Optional[Tensor] = None,
     ):
         """
         The [`Transformer2DModel`] forward method.
@@ -460,7 +459,6 @@ class Transformer2DModel(nn.Module):
                     encoder_hidden_states,
                     timestep,
                     added_cond_kwargs,
-                    pos_embed,
                 )
             )
 
@@ -528,10 +526,9 @@ class Transformer2DModel(nn.Module):
         encoder_hidden_states,
         timestep,
         added_cond_kwargs,
-        pos_embed,
     ):
         batch_size = ops.size()(hidden_states, dim=0)
-        hidden_states = self.pos_embed(hidden_states, pos_embed)
+        hidden_states = self.pos_embed(hidden_states)
         embedded_timestep = None
 
         if self.adaln_single is not None:

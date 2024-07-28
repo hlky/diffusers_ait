@@ -28,11 +28,6 @@ hidden_states = Tensor(
     name="hidden_states",
     is_input=True,
 )
-pos_embed = Tensor(
-    [1, IntVar([1, 65536]), config["cross_attention_dim"]],
-    name="pos_embed",
-    is_input=True,
-)
 encoder_hidden_states = Tensor(
     [1, IntVar([1, 128]), config["caption_channels"]],
     name="encoder_hidden_states",
@@ -44,7 +39,6 @@ timestep = Tensor(
 
 Y = ait_module.forward(
     hidden_states=hidden_states,
-    pos_embed=pos_embed,
     encoder_hidden_states=encoder_hidden_states,
     timestep=timestep,
 ).sample

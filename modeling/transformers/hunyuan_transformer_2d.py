@@ -396,7 +396,6 @@ class HunyuanDiT2DModel(nn.Module):
         style: Optional[Tensor] = None,
         image_rotary_emb: Optional[Tensor] = None,
         return_dict: bool = True,
-        pos_embed: Optional[Tensor] = None,
     ):
         """
         The [`HunyuanDiT2DModel`] forward method.
@@ -431,7 +430,7 @@ class HunyuanDiT2DModel(nn.Module):
             ops.size()(hidden_states, dim=2)._attrs["int_var"] / patch_size,
         )
 
-        hidden_states = self.pos_embed(hidden_states, pos_embed)
+        hidden_states = self.pos_embed(hidden_states)
 
         temb = self.time_extra_emb(
             timestep,

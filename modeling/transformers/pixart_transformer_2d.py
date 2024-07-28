@@ -185,7 +185,6 @@ class PixArtTransformer2DModel(nn.Module):
         attention_mask: Optional[Tensor] = None,
         encoder_attention_mask: Optional[Tensor] = None,
         return_dict: bool = True,
-        pos_embed: Optional[Tensor] = None,
     ):
         """
         The [`PixArtTransformer2DModel`] forward method.
@@ -264,7 +263,7 @@ class PixArtTransformer2DModel(nn.Module):
             ops.size()(hidden_states, dim=1)._attrs["int_var"] / self.patch_size,
             ops.size()(hidden_states, dim=2)._attrs["int_var"] / self.patch_size,
         )
-        hidden_states = self.pos_embed(hidden_states, pos_embed)
+        hidden_states = self.pos_embed(hidden_states)
 
         timestep, embedded_timestep = self.adaln_single(
             timestep,

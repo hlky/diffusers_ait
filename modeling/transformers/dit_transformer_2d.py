@@ -136,7 +136,6 @@ class DiTTransformer2DModel(nn.Module):
         class_labels: Optional[Tensor] = None,
         cross_attention_kwargs: Dict[str, Any] = None,
         return_dict: bool = True,
-        pos_embed: Optional[Tensor] = None,
     ):
         """
         The [`DiTTransformer2DModel`] forward method.
@@ -166,7 +165,7 @@ class DiTTransformer2DModel(nn.Module):
             ops.size()(hidden_states, dim=1)._attrs["int_var"] / self.patch_size,
             ops.size()(hidden_states, dim=2)._attrs["int_var"] / self.patch_size,
         )
-        hidden_states = self.pos_embed.forward(hidden_states, pos_embed)
+        hidden_states = self.pos_embed.forward(hidden_states)
 
         # 2. Blocks
         for block in self.transformer_blocks:
