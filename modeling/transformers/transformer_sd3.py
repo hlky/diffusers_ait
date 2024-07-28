@@ -1,16 +1,11 @@
-# TODO: sync attention for JointTransformerBlock
-# TODO: sync embeddings for CombinedTimestepTextProjEmbeddings
-
-from functools import partial
 from typing import Any, Dict, List, Optional, Union
 
 from aitemplate.compiler import ops
 
 from aitemplate.frontend import nn, Tensor
 
-# from ..attention import JointTransformerBlock
-from ..attention_processor import AttentionProcessor
-from ..embeddings import PatchEmbed  # , CombinedTimestepTextProjEmbeddings
+from ..attention import JointTransformerBlock
+from ..embeddings import CombinedTimestepTextProjEmbeddings, PatchEmbed
 from ..normalization import AdaLayerNormContinuous
 from .transformer_2d import Transformer2DModelOutput
 
@@ -116,42 +111,6 @@ class SD3Transformer2DModel(nn.Module):
 
         self.gradient_checkpointing = False
 
-    def set_attn_processor(
-        self, processor: Union[AttentionProcessor, Dict[str, AttentionProcessor]]
-    ):
-        r"""
-        Sets the attention processor to use to compute attention.
-
-        Parameters:
-            processor (`dict` of `AttentionProcessor` or only `AttentionProcessor`):
-                The instantiated processor class or a dictionary of processor classes that will be set as the processor
-                for **all** `Attention` layers.
-
-                If `processor` is a dict, the key needs to define the path to the corresponding cross attention
-                processor. This is strongly recommended when setting trainable attention processors.
-
-        """
-        count = len(self.attn_processors.keys())
-
-        if isinstance(processor, dict) and len(processor) != count:
-            raise ValueError(
-                f"A dict of processors was passed, but the number of processors {len(processor)} does not match the"
-                f" number of attention layers: {count}. Please make sure to pass {count} processor classes."
-            )
-
-        def fn_recursive_attn_processor(name: str, module: nn.Module, processor):
-            if hasattr(module, "set_processor"):
-                if not isinstance(processor, dict):
-                    module.set_processor(processor)
-                else:
-                    module.set_processor(processor.pop(f"{name}.processor"))
-
-            for sub_name, child in module.named_children():
-                fn_recursive_attn_processor(f"{name}.{sub_name}", child, processor)
-
-        for name, module in self.named_children():
-            fn_recursive_attn_processor(name, module, processor)
-
     def forward(
         self,
         hidden_states: Tensor,
@@ -161,7 +120,6 @@ class SD3Transformer2DModel(nn.Module):
         block_controlnet_hidden_states: List = None,
         joint_attention_kwargs: Optional[Dict[str, Any]] = None,
         return_dict: bool = True,
-        pos_embed: Optional[Tensor] = None,
     ) -> Union[Tensor, Transformer2DModelOutput]:
         """
         The [`SD3Transformer2DModel`] forward method.
@@ -194,9 +152,7 @@ class SD3Transformer2DModel(nn.Module):
             ops.size()(hidden_states, dim=2)._attrs["int_var"] / self.patch_size,
         )
 
-        hidden_states = self.pos_embed(
-            hidden_states, pos_embed
-        )  # takes care of adding positional embeddings too.
+        hidden_states = self.pos_embed(hidden_states)
         temb = self.time_text_embed(timestep, pooled_projections)
         encoder_hidden_states = self.context_embedder(encoder_hidden_states)
 

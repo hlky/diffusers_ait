@@ -5,7 +5,7 @@ from typing import Optional
 import numpy as np
 from aitemplate.compiler import ops
 
-from aitemplate.frontend import nn, Tensor
+from aitemplate.frontend import IntVar, nn, Tensor
 
 from .activations import FP32SiLU, get_activation
 
@@ -13,7 +13,14 @@ from .activations import FP32SiLU, get_activation
 
 
 def get_shape(x):
-    shape = [it.value() for it in x._attrs["shape"]]
+    shape = [
+        (
+            it.value()
+            if not isinstance(it, IntVar)
+            else [it.lower_bound(), it.upper_bound()]
+        )
+        for it in x._attrs["shape"]
+    ]
     return shape
 
 
@@ -33,23 +40,23 @@ def get_2d_sincos_pos_embed(
         grid_size = (grid_size, grid_size)
 
     grid_h = (
-        np.arange(grid_size[0], dtype=np.float32)
+        ops.arange(0, grid_size[0], 1)()
         / (grid_size[0] / base_size)
         / interpolation_scale
     )
     grid_w = (
-        np.arange(grid_size[1], dtype=np.float32)
+        ops.arange(0, grid_size[1], 1)()
         / (grid_size[1] / base_size)
         / interpolation_scale
     )
-    grid = np.meshgrid(grid_w, grid_h)  # here w goes first
-    grid = np.stack(grid, axis=0)
+    grid = ops.meshgrid()(grid_w, grid_h)  # here w goes first
+    grid = ops.stack()(grid, dim=0)
 
-    grid = grid.reshape([2, 1, grid_size[1], grid_size[0]])
+    grid = ops.reshape()(grid, [2, 1, grid_size[1], grid_size[0]])
     pos_embed = get_2d_sincos_pos_embed_from_grid(embed_dim, grid)
     if cls_token and extra_tokens > 0:
-        pos_embed = np.concatenate(
-            [np.zeros([extra_tokens, embed_dim]), pos_embed], axis=0
+        pos_embed = ops.concatenate()(
+            [ops.full()([extra_tokens, embed_dim], fill_value=0.0), pos_embed], dim=0
         )
     return pos_embed
 
@@ -59,10 +66,11 @@ def get_2d_sincos_pos_embed_from_grid(embed_dim, grid):
         raise ValueError("embed_dim must be divisible by 2")
 
     # use half of dimensions to encode grid_h
-    emb_h = get_1d_sincos_pos_embed_from_grid(embed_dim // 2, grid[0])  # (H*W, D/2)
-    emb_w = get_1d_sincos_pos_embed_from_grid(embed_dim // 2, grid[1])  # (H*W, D/2)
+    grid_0, grid_1 = ops.chunk()(grid, 2, dim=0)
+    emb_h = get_1d_sincos_pos_embed_from_grid(embed_dim // 2, grid_0)  # (H*W, D/2)
+    emb_w = get_1d_sincos_pos_embed_from_grid(embed_dim // 2, grid_1)  # (H*W, D/2)
 
-    emb = np.concatenate([emb_h, emb_w], axis=1)  # (H*W, D)
+    emb = ops.concatenate()([emb_h, emb_w], dim=1)  # (H*W, D)
     return emb
 
 
@@ -73,17 +81,20 @@ def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
     if embed_dim % 2 != 0:
         raise ValueError("embed_dim must be divisible by 2")
 
-    omega = np.arange(embed_dim // 2, dtype=np.float64)
+    omega = ops.arange(0, embed_dim // 2, 1)()
     omega /= embed_dim / 2.0
-    omega = 1.0 / 10000**omega  # (D/2,)
+    omega = 1.0 / ops.pow(10000, omega)  # (D/2,)
 
-    pos = pos.reshape(-1)  # (M,)
-    out = np.einsum("m,d->md", pos, omega)  # (M, D/2), outer product
+    pos = ops.reshape()(pos, [-1])  # (M,)
+    pos = ops.reshape()(pos, [-1, 1])  # (M, 1)
+    omega = ops.reshape()(omega, [1, -1])  # (1, D/2)
 
-    emb_sin = np.sin(out)  # (M, D/2)
-    emb_cos = np.cos(out)  # (M, D/2)
+    out = ops.gemm_rrr()(pos, omega)  # (M, D/2) outer product
 
-    emb = np.concatenate([emb_sin, emb_cos], axis=1)  # (M, D)
+    emb_sin = ops.sin(out)  # (M, D/2)
+    emb_cos = ops.cos(out)  # (M, D/2)
+
+    emb = ops.concatenate()([emb_sin, emb_cos], dim=1)  # (M, D)
     return emb
 
 
@@ -306,13 +317,17 @@ class PatchEmbed(nn.Module):
         flatten: bool = True,
         bias: bool = True,
         interpolation_scale: float = 1,
+        pos_embed_type="sincos",
+        pos_embed_max_size=None,  # For SD3 cropping
         dtype: str = "float16",
     ):
         super().__init__()
 
+        num_patches = (height // patch_size) * (width // patch_size)
         self.dtype = dtype
         self.flatten = flatten
         self.layer_norm = layer_norm
+        self.pos_embed_max_size = pos_embed_max_size
 
         if bias:
             self.proj = nn.Conv2dBias(
@@ -343,13 +358,81 @@ class PatchEmbed(nn.Module):
         self.height, self.width = height // patch_size, width // patch_size
         self.base_size = height // patch_size
         self.interpolation_scale = interpolation_scale
+        if pos_embed_max_size:
+            grid_size = pos_embed_max_size
+        else:
+            grid_size = int(num_patches**0.5)
 
-    def forward(self, latent: Tensor, pos_embed: Tensor):
+        if pos_embed_type is None:
+            self.pos_embed = None
+        elif pos_embed_type == "sincos":
+            pos_embed = get_2d_sincos_pos_embed(
+                embed_dim,
+                grid_size,
+                base_size=self.base_size,
+                interpolation_scale=self.interpolation_scale,
+            )
+            self.pos_embed = ops.unsqueeze(0)(pos_embed)
+        else:
+            raise ValueError(f"Unsupported pos_embed_type: {pos_embed_type}")
+
+    def cropped_pos_embed(self, height, width):
+        """Crops positional embeddings for SD3 compatibility."""
+        if self.pos_embed_max_size is None:
+            raise ValueError("`pos_embed_max_size` must be set for cropping.")
+
+        height = height / self.patch_size
+        width = width / self.patch_size
+        if any([value > self.pos_embed_max_size for value in height._attrs["values"]]):
+            raise ValueError(
+                f"Height ({height}) cannot be greater than `pos_embed_max_size`: {self.pos_embed_max_size}."
+            )
+        if any([value > self.pos_embed_max_size for value in width._attrs["values"]]):
+            raise ValueError(
+                f"Width ({width}) cannot be greater than `pos_embed_max_size`: {self.pos_embed_max_size}."
+            )
+
+        top = (self.pos_embed_max_size - height) / 2
+        left = (self.pos_embed_max_size - width) / 2
+        spatial_pos_embed = ops.reshape()(
+            self.pos_embed, [1, self.pos_embed_max_size, self.pos_embed_max_size, -1]
+        )
+        top_indices = ops.cast()(ops.arange(top, top + height, 1)(), "int64")
+        left_indices = ops.cast()(ops.arange(left, left + width, 1)(), "int64")
+        spatial_pos_embed = ops.index_select(dim=1)(spatial_pos_embed, top_indices)
+        spatial_pos_embed = ops.index_select(dim=2)(spatial_pos_embed, left_indices)
+        spatial_pos_embed = ops.reshape()(
+            spatial_pos_embed, [1, -1, ops.size()(spatial_pos_embed, dim=-1)]
+        )
+
+        return spatial_pos_embed
+
+    def forward(self, latent: Tensor):
+        # Directly accessing shape rather than ops.size to keep the named IntVar
+        height, width = (latent._attrs["shape"][1], latent._attrs["shape"][2])
+        if self.pos_embed_max_size is None:
+            height, width = (height / self.patch_size, width / self.patch_size)
+
         latent = self.proj(latent)
         if self.flatten:
             latent = ops.flatten(1, 2)(latent)
         if self.layer_norm:
             latent = self.norm(latent)
+        if self.pos_embed_max_size:
+            pos_embed = self.cropped_pos_embed(height, width)
+        else:
+            if self.height != height or self.width != width:
+                pos_embed = get_2d_sincos_pos_embed(
+                    embed_dim=ops.size()(self.pos_embed, dim=-1)
+                    ._attrs["int_var"]
+                    .symbolic_value(),
+                    grid_size=(height, width),
+                    base_size=self.base_size,
+                    interpolation_scale=self.interpolation_scale,
+                )
+                pos_embed = ops.unsqueeze(0)(pos_embed)
+            else:
+                pos_embed = self.pos_embed
 
         pos_embed._attrs["shape"] = latent._attrs["shape"]
         return latent + pos_embed
@@ -864,3 +947,32 @@ class AttentionPooling(nn.Module):
         a = a.reshape(bs, -1, 1).transpose(1, 2)
 
         return a[:, 0, :]  # cls_token
+
+
+class CombinedTimestepTextProjEmbeddings(nn.Module):
+    def __init__(
+        self, embedding_dim: int, pooled_projection_dim: int, dtype: str = "float16"
+    ):
+        super().__init__()
+
+        self.time_proj = Timesteps(
+            num_channels=256, flip_sin_to_cos=True, downscale_freq_shift=0, dtype=dtype
+        )
+        self.timestep_embedder = TimestepEmbedding(
+            in_channels=256, time_embed_dim=embedding_dim, dtype=dtype
+        )
+        self.text_embedder = PixArtAlphaTextProjection(
+            pooled_projection_dim, embedding_dim, act_fn="silu", dtype=dtype
+        )
+
+    def forward(self, timestep: Tensor, pooled_projection: Tensor):
+        timesteps_proj = self.time_proj(timestep)
+        timesteps_emb = self.timestep_embedder(
+            ops.cast()(timesteps_proj, dtype=pooled_projection.dtype())
+        )  # (N, D)
+
+        pooled_projections = self.text_embedder(pooled_projection)
+
+        conditioning = timesteps_emb + pooled_projections
+
+        return conditioning

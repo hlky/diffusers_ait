@@ -1,13 +1,21 @@
-import inspect
-import math
-from importlib import import_module
-from typing import Callable, List, Optional, Union
+from typing import Optional, Union
 
 from aitemplate.compiler import ops
 
-from aitemplate.frontend import nn, Tensor
+from aitemplate.frontend import IntVar, nn, Tensor
+
 
 # TODO: other processors
+def get_shape(x):
+    shape = [
+        (
+            it.value()
+            if not isinstance(it, IntVar)
+            else [it.lower_bound(), it.upper_bound()]
+        )
+        for it in x._attrs["shape"]
+    ]
+    return shape
 
 
 class Attention(nn.Module):
@@ -85,6 +93,7 @@ class Attention(nn.Module):
         _from_deprecated_attn_block: bool = False,
         processor: Optional["AttnProcessor2_0"] = None,
         out_dim: int = None,
+        context_pre_only=None,
         dtype: str = "float16",
     ):
         super().__init__()
@@ -102,6 +111,7 @@ class Attention(nn.Module):
         self.dropout = dropout
         self.fused_projections = False
         self.out_dim = out_dim if out_dim is not None else query_dim
+        self.context_pre_only = context_pre_only
 
         # we make use of this private variable to know whether this class is loaded
         # with an deprecated state dict so that we can convert it on the fly
@@ -186,12 +196,21 @@ class Attention(nn.Module):
         if self.added_kv_proj_dim is not None:
             self.add_k_proj = nn.Linear(added_kv_proj_dim, self.inner_dim, dtype=dtype)
             self.add_v_proj = nn.Linear(added_kv_proj_dim, self.inner_dim, dtype=dtype)
+            if self.context_pre_only is not None:
+                self.add_q_proj = nn.Linear(
+                    added_kv_proj_dim, self.inner_dim, dtype=dtype
+                )
 
         self.to_out = nn.ModuleList([])
         self.to_out.append(
             nn.Linear(self.inner_dim, self.out_dim, bias=out_bias, dtype=dtype)
         )
         self.to_out.append(nn.Dropout(dropout))
+
+        if self.context_pre_only is not None and not self.context_pre_only:
+            self.to_add_out = nn.Linear(
+                self.inner_dim, self.out_dim, bias=out_bias, dtype=dtype
+            )
         if processor is None:
             processor = AttnProcessor2_0()
         self.set_processor(processor)
@@ -552,6 +571,108 @@ class AttnProcessor2_0:
         hidden_states = hidden_states / attn.rescale_output_factor
 
         return hidden_states
+
+
+class JointAttnProcessor2_0:
+    """Attention processor used typically in processing the SD3-like self-attention projections."""
+
+    def __call__(
+        self,
+        attn: Attention,
+        hidden_states: Tensor,
+        encoder_hidden_states: Tensor = None,
+        attention_mask: Optional[Tensor] = None,
+        *args,
+        **kwargs,
+    ) -> Tensor:
+        residual = hidden_states
+        residual_dim = ops.size()(residual, dim=1)._attrs["int_var"]
+
+        input_ndim = len(ops.size()(hidden_states))
+
+        if input_ndim == 4:
+            batch_size, height, width, channel = ops.size()(hidden_states)
+            hidden_states = ops.reshape()(
+                hidden_states, [batch_size, height * width, channel]
+            )
+
+        context_input_ndim = len(ops.size()(encoder_hidden_states))
+        if context_input_ndim == 4:
+            batch_size, height, width, channel = ops.size()(encoder_hidden_states)
+            encoder_hidden_states = ops.reshape()(
+                encoder_hidden_states, [batch_size, height * width, channel]
+            )
+
+        batch_size = ops.size()(encoder_hidden_states, dim=0)
+
+        # `sample` projections.
+        query = attn.to_q(hidden_states)
+        key = attn.to_k(hidden_states)
+        value = attn.to_v(hidden_states)
+
+        # `context` projections.
+        encoder_hidden_states_query_proj = attn.add_q_proj(encoder_hidden_states)
+        encoder_hidden_states_key_proj = attn.add_k_proj(encoder_hidden_states)
+        encoder_hidden_states_value_proj = attn.add_v_proj(encoder_hidden_states)
+
+        # attention
+        query = ops.concatenate()([query, encoder_hidden_states_query_proj], dim=1)
+        key = ops.concatenate()([key, encoder_hidden_states_key_proj], dim=1)
+        value = ops.concatenate()([value, encoder_hidden_states_value_proj], dim=1)
+
+        inner_dim = ops.size()(key, dim=-1)._attrs["int_var"]
+        head_dim = inner_dim / attn.heads
+        query = ops.permute0213()(
+            ops.reshape()(query, [batch_size, -1, attn.heads, head_dim])
+        )
+
+        key = ops.permute0213()(
+            ops.reshape()(key, [batch_size, -1, attn.heads, head_dim])
+        )
+        value = ops.permute0213()(
+            ops.reshape()(value, [batch_size, -1, attn.heads, head_dim])
+        )
+        attn_op = ops.mem_eff_attention(causal=False)
+        hidden_states = attn_op(query, key, value)
+
+        hidden_states = ops.reshape()(
+            hidden_states, [batch_size, -1, attn.heads * head_dim]
+        )
+        hidden_states = ops.cast()(hidden_states, dtype=query.dtype())
+
+        # Split the attention outputs.
+
+        hidden_states_dim = ops.size()(hidden_states, dim=1)._attrs["int_var"]
+        hidden_states_indices = ops.cast()(ops.arange(0, residual_dim, 1)(), "int64")
+        encoder_hidden_states_indices = ops.cast()(
+            ops.arange(residual_dim, hidden_states_dim, 1)(), "int64"
+        )
+
+        hidden_states_sliced = ops.index_select(dim=1)(
+            hidden_states, hidden_states_indices
+        )
+        encoder_hidden_states = ops.index_select(dim=1)(
+            hidden_states, encoder_hidden_states_indices
+        )
+        hidden_states = hidden_states_sliced
+
+        # linear proj
+        hidden_states = attn.to_out[0](hidden_states)
+        # dropout
+        hidden_states = attn.to_out[1](hidden_states)
+        if not attn.context_pre_only:
+            encoder_hidden_states = attn.to_add_out(encoder_hidden_states)
+
+        if input_ndim == 4:
+            hidden_states = ops.reshape()(
+                hidden_states, [batch_size, height, width, channel]
+            )
+        if context_input_ndim == 4:
+            encoder_hidden_states = ops.reshape()(
+                encoder_hidden_states, [batch_size, height, width, channel]
+            )
+
+        return hidden_states, encoder_hidden_states
 
 
 # class AttnAddedKVProcessor2_0:
