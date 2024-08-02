@@ -110,7 +110,6 @@ class EmbeddingsTestCase(unittest.TestCase):
             target,
             "./tmp",
             f"test_timesteps_{dtype}_c-{channels}_flip-{flip_sin_to_cos}_scale-{downscale_freq_shift}",
-            constants=constants,
         )
 
         module.run_with_tensors([x], [y])
