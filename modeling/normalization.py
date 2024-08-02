@@ -3,18 +3,26 @@ from typing import Any, Dict, Iterable, Optional, Tuple, Union
 from aitemplate.compiler import ops
 from aitemplate.compiler.base import IntVarTensor
 
-from aitemplate.frontend import nn, Tensor
+from aitemplate.frontend import IntVar, nn, Tensor
 
 from .activations import get_activation
 
 from .embeddings import (
     CombinedTimestepLabelEmbeddings,
     PixArtAlphaCombinedTimestepSizeEmbeddings,
+    SiLU,
 )
 
 
 def get_shape(x):
-    shape = [it.value() for it in x._attrs["shape"]]
+    shape = [
+        (
+            it.value()
+            if not isinstance(it, IntVar)
+            else [it.lower_bound(), it.upper_bound()]
+        )
+        for it in x._attrs["shape"]
+    ]
     return shape
 
 
@@ -120,12 +128,13 @@ class AdaLayerNormZero(nn.Module):
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = ops.chunk()(
             emb, chunks=6, dim=-1
         )
-        shift_msa = ops.squeeze(0)(shift_msa)
-        scale_msa = ops.squeeze(0)(scale_msa)
-        gate_msa = ops.squeeze(0)(gate_msa)
-        shift_mlp = ops.squeeze(0)(shift_mlp)
-        scale_mlp = ops.squeeze(0)(scale_mlp)
-        gate_mlp = ops.squeeze(0)(gate_mlp)
+        # TODO: why did we squeeze here? check tests and other usages of AdaLayerNormZero
+        # shift_msa = ops.squeeze(0)(shift_msa)
+        # scale_msa = ops.squeeze(0)(scale_msa)
+        # gate_msa = ops.squeeze(0)(gate_msa)
+        # shift_mlp = ops.squeeze(0)(shift_mlp)
+        # scale_mlp = ops.squeeze(0)(scale_mlp)
+        # gate_mlp = ops.squeeze(0)(gate_mlp)
         x = self.norm(x) * (1 + ops.unsqueeze(1)(scale_msa)) + ops.unsqueeze(1)(
             shift_msa
         )
@@ -274,3 +283,61 @@ class GlobalResponseNorm(nn.Module):
         )
         nx = gx / (ops.reduce_mean(dim=-1, keepdim=True)(gx) + 1e-6)
         return self.gamma.tensor() * (x * nx) + self.beta.tensor() + x
+
+
+class FP32LayerNorm(nn.LayerNorm):
+    def forward(self, inputs: Tensor) -> Tensor:
+        origin_dtype = inputs.dtype()
+        return ops.cast()(
+            ops.layernorm()(
+                ops.cast()(inputs, dtype="float32"),
+                ops.cast()(self.weight.tensor(), dtype="float32"),
+                ops.cast()(self.bias.tensor(), dtype="float32"),
+                self.dim,
+                self.eps,
+            ),
+            dtype=origin_dtype,
+        )
+
+
+class AdaLayerNormZeroSingle(nn.Module):
+    r"""
+    Norm layer adaptive layer norm zero (adaLN-Zero).
+    Parameters:
+        embedding_dim (`int`): The size of each embedding vector.
+        num_embeddings (`int`): The size of the embeddings dictionary.
+    """
+
+    def __init__(
+        self,
+        embedding_dim: int,
+        norm_type="layer_norm",
+        bias=True,
+        dtype: str = "float16",
+    ):
+        super().__init__()
+
+        self.silu = SiLU()
+        self.linear = nn.Linear(
+            embedding_dim, 3 * embedding_dim, bias=bias, dtype=dtype
+        )
+        if norm_type == "layer_norm":
+            self.norm = nn.LayerNorm(
+                embedding_dim, elementwise_affine=False, eps=1e-6, dtype=dtype
+            )
+        else:
+            raise ValueError(
+                f"Unsupported `norm_type` ({norm_type}) provided. Supported ones are: 'layer_norm', 'fp32_layer_norm'."
+            )
+
+    def forward(
+        self,
+        x: Tensor,
+        emb: Optional[Tensor] = None,
+    ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+        emb = self.linear(self.silu(emb))
+        shift_msa, scale_msa, gate_msa = ops.chunk()(emb, 3, dim=1)
+        x = self.norm(x) * (
+            1 + ops.unsqueeze(1)(scale_msa) + ops.unsqueeze(1)(shift_msa)
+        )
+        return x, gate_msa

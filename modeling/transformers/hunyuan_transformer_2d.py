@@ -19,22 +19,7 @@ from ..embeddings import (
 )
 from ..modeling_outputs import Transformer2DModelOutput
 
-from ..normalization import AdaLayerNormContinuous
-
-
-class FP32LayerNorm(nn.LayerNorm):
-    def forward(self, inputs: Tensor) -> Tensor:
-        origin_dtype = inputs.dtype()
-        return ops.cast()(
-            ops.layernorm()(
-                ops.cast()(inputs, dtype="float32"),
-                ops.cast()(self.weight.tensor(), dtype="float32"),
-                ops.cast()(self.bias.tensor(), dtype="float32"),
-                self.dim,
-                self.eps,
-            ),
-            dtype=origin_dtype,
-        )
+from ..normalization import AdaLayerNormContinuous, FP32LayerNorm
 
 
 class AdaLayerNormShift(nn.Module):

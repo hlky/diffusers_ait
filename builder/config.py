@@ -89,21 +89,32 @@ _CLASS_MAPPING = {
         "ait": modeling.unets.UVit2DModel,
         "pt": diffusers.models.unets.UVit2DModel,
     },
+    "FluxTransformer2DModel": {
+        "ait": modeling.transformers.FluxTransformer2DModel,
+        "pt": diffusers.models.transformers.transformer_flux.FluxTransformer2DModel,
+    },
 }
 
 
-def load_config(hf_hub: str, subfolder: Optional[str] = None):
-    filename = "config.json"
-    if subfolder:
-        filename = f"{subfolder}/{filename}"
-    url = f"https://huggingface.co/{hf_hub}/resolve/main/{filename}?download=true"
-    r = requests.get(url)
-    if not r.ok:
-        return
-    try:
-        j = r.json()
-    except Exception as e:
-        print(e)
+def load_config(
+    hf_hub: Optional[str] = None,
+    subfolder: Optional[str] = None,
+    config_file: Optional[str] = None,
+):
+    if config_file is not None:
+        j = json.load(open(config_file, "r"))
+    else:
+        filename = "config.json"
+        if subfolder:
+            filename = f"{subfolder}/{filename}"
+        url = f"https://huggingface.co/{hf_hub}/resolve/main/{filename}?download=true"
+        r = requests.get(url)
+        if not r.ok:
+            return
+        try:
+            j = r.json()
+        except Exception as e:
+            print(e)
     config = j
     _class_name = config.pop("_class_name", "")
     _diffusers_version = config.pop("_diffusers_version")
