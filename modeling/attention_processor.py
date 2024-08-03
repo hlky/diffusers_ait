@@ -226,12 +226,17 @@ class Attention(nn.Module):
             self.to_k = None
             self.to_v = None
 
+        # to_out cutlass error if these are cast from float8 🤷‍♂️
         if self.added_kv_proj_dim is not None:
-            self.add_k_proj = nn.Linear(added_kv_proj_dim, self.inner_dim, dtype=dtype)
-            self.add_v_proj = nn.Linear(added_kv_proj_dim, self.inner_dim, dtype=dtype)
+            self.add_k_proj = nn.Linear(
+                added_kv_proj_dim, self.inner_dim, dtype="float16"
+            )
+            self.add_v_proj = nn.Linear(
+                added_kv_proj_dim, self.inner_dim, dtype="float16"
+            )
             if self.context_pre_only is not None:
                 self.add_q_proj = nn.Linear(
-                    added_kv_proj_dim, self.inner_dim, dtype=dtype
+                    added_kv_proj_dim, self.inner_dim, dtype="float16"
                 )
 
         if not self.pre_only:
@@ -843,19 +848,19 @@ class FluxAttnProcessor2_0:
         hidden_states = ops.reshape()(
             hidden_states, [batch_size, -1, attn.heads * head_dim]
         )
-        hidden_states = ops.cast()(hidden_states, dtype=query.dtype())
 
         encoder_hidden_states_dim = ops.size()(encoder_hidden_states, dim=1)._attrs[
             "int_var"
         ]
         hidden_states_dim = ops.size()(hidden_states, dim=1)._attrs["int_var"]
-        encoder_hidden_states_indices = ops.cast()(
-            ops.arange(0, encoder_hidden_states_dim, 1)(), "int64"
-        )
+        # TODO: other arange direct dtype
+        encoder_hidden_states_indices = ops.arange(
+            0, encoder_hidden_states_dim, 1, "int64"
+        )()
 
-        hidden_states_indices = ops.cast()(
-            ops.arange(encoder_hidden_states_dim, hidden_states_dim, 1)(), "int64"
-        )
+        hidden_states_indices = ops.arange(
+            encoder_hidden_states_dim, hidden_states_dim, 1, "int64"
+        )()
 
         encoder_hidden_states = ops.index_select(dim=1)(
             hidden_states, encoder_hidden_states_indices

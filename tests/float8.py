@@ -4,7 +4,7 @@ from typing import cast, List, Optional, Tuple
 
 import torch
 from aitemplate.compiler import compile_model, ops
-from aitemplate.frontend import Tensor, nn
+from aitemplate.frontend import nn, Tensor
 from aitemplate.testing import detect_target
 from aitemplate.testing.test_utils import get_random_torch_tensor, string_to_torch_dtype
 

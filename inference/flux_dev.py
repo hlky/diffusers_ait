@@ -1,6 +1,7 @@
+from typing import List
+
 import torch
 import tqdm
-from typing import List
 
 from aitemplate.compiler import Model
 from aitemplate.compiler.dtype import _ENUM_TO_TORCH_DTYPE

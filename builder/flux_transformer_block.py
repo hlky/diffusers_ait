@@ -1,12 +1,13 @@
 import os
-import safetensors
 import shutil
 import subprocess
+
+import safetensors
 import torch
 
 from aitemplate.compiler import compile_model
 from aitemplate.frontend import IntVar, Tensor
-from aitemplate.testing import detect_target
+from aitemplate.testing import benchmark_ait, detect_target
 from aitemplate.utils.import_path import import_parent
 from aitemplate.utils.misc import is_windows
 
@@ -39,17 +40,18 @@ weights_3 = safetensors.safe_open(
 )
 
 
-def compile(constants, model_name, do_compile=False, do_build=False):
+def compile(
+    constants, model_name, do_compile=False, do_build=False, do_benchmark=False
+):
     resolution = 768, 1024
     height, width = resolution, resolution
 
     ait = modeling.transformers.transformer_flux.FluxTransformerBlock
-    config, _, pt = load_config(config_file="builder/flux_dev_config.json")
-
     ait_module = ait(
         dim=config["num_attention_heads"] * config["attention_head_dim"],
         num_attention_heads=config["num_attention_heads"],
         attention_head_dim=config["attention_head_dim"],
+        dtype="float8_e5m2",
     )
     ait_module.name_parameter_tensor()
 
@@ -75,7 +77,7 @@ def compile(constants, model_name, do_compile=False, do_build=False):
             batch,
             seq_len,
             config["num_attention_heads"] * config["attention_head_dim"],
-        ],  # allow more tokens
+        ],
         name="encoder_hidden_states",
         is_input=True,
     )
@@ -101,9 +103,8 @@ def compile(constants, model_name, do_compile=False, do_build=False):
         encoder_hidden_states_out, "encoder_hidden_states_out"
     )
     hidden_states_out = mark_output(hidden_states_out, "hidden_states_out")
-
     target = detect_target()
-    compile_model(
+    module = compile_model(
         [encoder_hidden_states_out, hidden_states_out],
         target,
         "./tmp",
@@ -114,22 +115,31 @@ def compile(constants, model_name, do_compile=False, do_build=False):
         do_compile=do_compile,
         do_build=do_build,
     )
+    if do_benchmark:
+        benchmark_ait.benchmark_module(module)
 
 
 for block_idx in range(0, config["num_layers"]):
     prefix = "transformer_blocks"
     constants = {}
     block_prefix = f"{prefix}.{block_idx}."
+    model_name = f"FluxTransformerBlock.{block_idx}"
     if block_idx != 0 and os.path.exists(f"{constants_path}/{model_name + '.bin'}"):
         continue
     for weights in [weights_1, weights_2, weights_3]:
         for key in weights.keys():
             if not key.startswith(block_prefix):
                 continue
+            skip = [
+                ".add_v_proj.",
+                ".add_k_proj.",
+                ".add_q_proj.",
+            ]
             constants[key.replace(block_prefix, "").replace(".", "_")] = (
                 weights.get_tensor(key).to(torch.float16)
+                if any([skip_key in key for skip_key in skip])
+                else weights.get_tensor(key).to(torch.float8_e5m2)
             )
-    model_name = f"FluxTransformerBlock.{block_idx}"
     compile(constants, model_name, do_compile=block_idx == 0)
     shutil.move(
         f"./tmp/{model_name}/constants.bin",

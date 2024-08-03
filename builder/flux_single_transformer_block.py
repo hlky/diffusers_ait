@@ -1,7 +1,8 @@
 import os
-import safetensors
 import shutil
 import subprocess
+
+import safetensors
 import torch
 
 from aitemplate.compiler import compile_model
@@ -48,6 +49,7 @@ def compile(constants, model_name, do_compile=False, do_build=False):
         dim=config["num_attention_heads"] * config["attention_head_dim"],
         num_attention_heads=config["num_attention_heads"],
         attention_head_dim=config["attention_head_dim"],
+        dtype="float8_e5m2",
     )
     ait_module.name_parameter_tensor()
 
@@ -111,7 +113,7 @@ for block_idx in range(0, config["num_single_layers"]):
             if not key.startswith(block_prefix):
                 continue
             constants[key.replace(block_prefix, "").replace(".", "_")] = (
-                weights.get_tensor(key).to(torch.float16)
+                weights.get_tensor(key).to(torch.float8_e5m2)
             )
     compile(constants, model_name, do_compile=block_idx == 0)
     shutil.move(
