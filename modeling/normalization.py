@@ -31,6 +31,7 @@ class RMSNorm(nn.Module):
         self, dim, eps: float, elementwise_affine: bool = True, dtype: str = "float16"
     ):
         super().__init__()
+        self.dtype = dtype
 
         self.eps = eps
 
@@ -53,7 +54,13 @@ class RMSNorm(nn.Module):
             # convert into half-precision if necessary
             if self.weight.tensor().dtype() in ["float16", "bfloat16"]:
                 hidden_states = ops.cast()(hidden_states, self.weight.tensor().dtype())
-            hidden_states = hidden_states * self.weight.tensor()
+            elif self.dtype != input_dtype:
+                hidden_states = ops.cast()(hidden_states, input_dtype)
+            hidden_states = hidden_states * (
+                self.weight.tensor()
+                if hidden_states.dtype() == self.dtype
+                else ops.cast()(self.weight.tensor(), hidden_states.dtype())
+            )
         else:
             hidden_states = ops.cast()(hidden_states, input_dtype)
 

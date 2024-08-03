@@ -164,8 +164,8 @@ class Attention(nn.Module):
             self.norm_q = None
             self.norm_k = None
         elif qk_norm == "layer_norm":
-            self.norm_q = nn.LayerNorm(dim_head, eps=eps)
-            self.norm_k = nn.LayerNorm(dim_head, eps=eps)
+            self.norm_q = nn.LayerNorm(dim_head, eps=eps, dtype=dtype)
+            self.norm_k = nn.LayerNorm(dim_head, eps=eps, dtype=dtype)
         elif qk_norm == "fp32_layer_norm":
             self.norm_q = FP32LayerNorm(
                 dim_head, elementwise_affine=False, bias=False, eps=eps
@@ -175,11 +175,11 @@ class Attention(nn.Module):
             )
         elif qk_norm == "layer_norm_across_heads":
             # Lumina applys qk norm across all heads
-            self.norm_q = nn.LayerNorm(dim_head * heads, eps=eps)
-            self.norm_k = nn.LayerNorm(dim_head * kv_heads, eps=eps)
+            self.norm_q = nn.LayerNorm(dim_head * heads, eps=eps, dtype=dtype)
+            self.norm_k = nn.LayerNorm(dim_head * kv_heads, eps=eps, dtype=dtype)
         elif qk_norm == "rms_norm":
-            self.norm_q = RMSNorm(dim_head, eps=eps)
-            self.norm_k = RMSNorm(dim_head, eps=eps)
+            self.norm_q = RMSNorm(dim_head, eps=eps, dtype=dtype)
+            self.norm_k = RMSNorm(dim_head, eps=eps, dtype=dtype)
         else:
             raise ValueError(
                 f"unknown qk_norm: {qk_norm}. Should be None or 'layer_norm'"
