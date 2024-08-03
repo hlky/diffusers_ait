@@ -27,6 +27,7 @@ Modules that cannot currently be supported due to missing kernels in AIT, or uns
 - PixArt
 - Flux-dev
 - Flux-schnell
+- FluxTransformerBlock, FluxSingleTransformerBlock
 
 Modules work with any supported model weights.
 
