@@ -2,6 +2,7 @@ import json
 
 from typing import Optional
 
+import diffusers.models.autoencoders
 import diffusers.models.transformers
 import diffusers.models.unets
 import requests
@@ -92,6 +93,10 @@ _CLASS_MAPPING = {
     "FluxTransformer2DModel": {
         "ait": modeling.transformers.FluxTransformer2DModel,
         "pt": diffusers.models.transformers.transformer_flux.FluxTransformer2DModel,
+    },
+    "AutoencoderKL": {
+        "ait": modeling.autoencoders.AutoencoderKL,
+        "pt": diffusers.models.autoencoders.autoencoder_kl.AutoencoderKL,
     },
 }
 
