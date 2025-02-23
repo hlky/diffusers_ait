@@ -137,6 +137,26 @@ pt = pt.from_pretrained(hf_hub, subfolder="vae")
 constants = map_vae(pt)
 
 target = detect_target()
+
+device_name = (
+    torch.cuda.get_device_name()
+    .lower()
+    .replace("nvidia ", "")
+    .replace("geforce rtx ", "")
+    .replace("geforce gtx ", "")
+    .replace("geforce gt ", "")
+    .replace("geforce ", "")
+    .replace("tesla ", "")
+    .replace("quadro ", "")
+    .strip()
+    .replace(" ", "_")
+    .lower()
+    .split(",")[0]
+    .split("(")[0]
+)
+
+sm = "".join(str(i) for i in torch.cuda.get_device_capability())
+
 compile_model(
     Y,
     target,
@@ -144,5 +164,5 @@ compile_model(
     model_name,
     constants=constants,
     num_runtimes=8,
-    dll_name="autoencoder_kl",
+    dll_name=f"autoencoder_kl.{device_name}.sm{sm}.so",
 )
