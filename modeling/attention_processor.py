@@ -571,9 +571,7 @@ class AttnProcessor2_0:
             )
 
         if attn.group_norm is not None:
-            hidden_states = ops.permute021()(
-                attn.group_norm(ops.permute021()(hidden_states))
-            )
+            hidden_states = attn.group_norm(hidden_states)
 
         query = attn.to_q(hidden_states)
 
