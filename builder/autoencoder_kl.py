@@ -42,13 +42,32 @@ def map_vae(pt_module, device="cuda", dtype="float16", encoder=False):
 
     return params_ait
 
+device_name = (
+    torch.cuda.get_device_name()
+    .lower()
+    .replace("nvidia ", "")
+    .replace("geforce rtx ", "")
+    .replace("geforce gtx ", "")
+    .replace("geforce gt ", "")
+    .replace("geforce ", "")
+    .replace("tesla ", "")
+    .replace("quadro ", "")
+    .strip()
+    .replace(" ", "_")
+    .lower()
+    .split(",")[0]
+    .split("(")[0]
+)
+
+sm = "".join(str(i) for i in torch.cuda.get_device_capability())
+
 
 batch_size = 1, 1
-resolution = 512, 1024
+resolution = 8, 1024
 height, width = resolution, resolution
 
 hf_hub = "runwayml/stable-diffusion-v1-5"
-model_name = "stable-diffusion-v1-5"
+model_name = f"autoencoder_kl.decoder.{resolution[1]}.{device_name}.sm{sm}"
 
 config, ait, pt = load_config(hf_hub, subfolder="vae")
 
@@ -74,31 +93,11 @@ constants = map_vae(pt)
 
 target = detect_target()
 
-device_name = (
-    torch.cuda.get_device_name()
-    .lower()
-    .replace("nvidia ", "")
-    .replace("geforce rtx ", "")
-    .replace("geforce gtx ", "")
-    .replace("geforce gt ", "")
-    .replace("geforce ", "")
-    .replace("tesla ", "")
-    .replace("quadro ", "")
-    .strip()
-    .replace(" ", "_")
-    .lower()
-    .split(",")[0]
-    .split("(")[0]
-)
-
-sm = "".join(str(i) for i in torch.cuda.get_device_capability())
-
 compile_model(
     Y,
     target,
     "./tmp",
     model_name,
     constants=constants,
-    num_runtimes=8,
-    dll_name=f"autoencoder_kl.{device_name}.sm{sm}.so",
+    dll_name=f"{model_name}.so",
 )
