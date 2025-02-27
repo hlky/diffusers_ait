@@ -15,6 +15,7 @@ parser.add_argument("--min-batch", type=int, default=1)
 parser.add_argument("--max-batch", type=int, default=1)
 parser.add_argument("--hf_hub", type=str, default="runwayml/stable-diffusion-v1-5")
 parser.add_argument("--label", type=str, default="v1")
+parser.add_argument("--subfolder", type=str, default=None, help="`vae` if `hf_hub` is for a pipeline.")
 
 args = parser.parse_args()
 
@@ -83,7 +84,7 @@ hf_hub = args.hf_hub
 label = args.label
 model_name = f"autoencoder_kl.decoder.{label}.{resolution[1]}.{device_name}.sm{sm}"
 
-config, ait, pt = load_config(hf_hub, subfolder="vae")
+config, ait, pt = load_config(hf_hub, subfolder=args.subfolder)
 
 ait_module = ait(**config)
 ait_module.name_parameter_tensor()
@@ -102,7 +103,7 @@ z = Tensor(
 Y = ait_module._decode(z=z).sample
 Y = mark_output(Y, "Y")
 
-pt = pt.from_pretrained(hf_hub, subfolder="vae")
+pt = pt.from_pretrained(hf_hub, subfolder=args.subfolder)
 constants = map_vae(pt)
 
 target = detect_target()
