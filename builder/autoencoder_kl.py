@@ -6,6 +6,18 @@ from config import load_config, mark_output
 
 import torch
 
+from argparse import ArgumentParser
+
+parser = ArgumentParser()
+parser.add_argument("--max", type=int)
+parser.add_argument("--min", type=int, default=8)
+parser.add_argument("--min-batch", type=int, default=1)
+parser.add_argument("--max-batch", type=int, default=1)
+parser.add_argument("--hf_hub", type=str, default="runwayml/stable-diffusion-v1-5")
+parser.add_argument("--label", type=str, default="v1")
+
+args = parser.parse_args()
+
 
 def torch_dtype_from_str(dtype: str):
     return torch.__dict__.get(dtype, None)
@@ -42,6 +54,7 @@ def map_vae(pt_module, device="cuda", dtype="float16", encoder=False):
 
     return params_ait
 
+
 device_name = (
     torch.cuda.get_device_name()
     .lower()
@@ -62,12 +75,13 @@ device_name = (
 sm = "".join(str(i) for i in torch.cuda.get_device_capability())
 
 
-batch_size = 1, 1
-resolution = 8, 1024
+batch_size = args.min_batch, args.max_batch
+resolution = args.min, args.max
 height, width = resolution, resolution
 
-hf_hub = "runwayml/stable-diffusion-v1-5"
-model_name = f"autoencoder_kl.decoder.{resolution[1]}.{device_name}.sm{sm}"
+hf_hub = args.hf_hub
+label = args.label
+model_name = f"autoencoder_kl.decoder.{label}.{resolution[1]}.{device_name}.sm{sm}"
 
 config, ait, pt = load_config(hf_hub, subfolder="vae")
 
