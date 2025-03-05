@@ -1,8 +1,10 @@
 from typing import Optional, Tuple, Union
 
+import numpy as np
+
 from aitemplate.compiler import ops
 
-from aitemplate.frontend import nn, Tensor
+from aitemplate.frontend import IntVar, nn, Tensor
 
 from ..attention_processor import AttentionProcessor
 
@@ -11,14 +13,25 @@ from ..attention_processor import Attention
 from ..modeling_outputs import AutoencoderKLOutput
 from .vae import DecoderOutput, DiagonalGaussianDistribution
 
+def get_shape(x):
+    shape = [
+        (
+            it.value()
+            if not isinstance(it, IntVar)
+            else [it.lower_bound(), it.upper_bound()]
+        )
+        for it in x._attrs["shape"]
+    ]
+    return shape
+
 
 def prepare_causal_attention_mask(
-    num_frames: int, height_width: int, dtype, device, batch_size: int = None
+    num_frames: int, height_width: int, dtype, batch_size: int = None
 ) -> Tensor:
     indices = ops.arange(1, num_frames + 1, 1, dtype="int32")()
     indices_blocks = ops.repeat_interleave(height_width, 0)(indices)
-    x, y = ops.meshgrid(indexing="xy")([indices_blocks, indices_blocks])
-    mask = ops.cast()(ops.where()(ops.le()(x, y), 0, -float("inf")), dtype=dtype)
+    x, y = ops.meshgrid(indexing="xy")(indices_blocks, indices_blocks)
+    mask = ops.cast()(ops.where()(ops.le()(x, y), Tensor(shape=[], value=0, dtype=dtype), Tensor(shape=[], value=-float("inf"), dtype=dtype)), dtype=dtype)
 
     if batch_size is not None:
         mask = ops.expand()(ops.unsqueeze(0)(mask), [batch_size, -1, -1])
@@ -76,16 +89,25 @@ class HunyuanVideoUpsampleCausal3D(nn.Module):
         self.conv = HunyuanVideoCausalConv3d(in_channels, out_channels, kernel_size, stride, bias=bias)
 
     def forward(self, hidden_states: Tensor) -> Tensor:
-        num_frames = ops.size()(hidden_states, dim=2)
+        num_frames = ops.size()(hidden_states, dim=1)
 
-        first_frame, other_frames = ops.split()(hidden_states, (1, num_frames - 1), dim=2)
-        first_frame = ops.unsqueeze(2)(ops.upsampling2d(scale_factor=self.upsample_factor[1:], mode="nearest")(ops.squeeze(2)(first_frame)))
+        first_frame = hidden_states[:, 0, :, :, :]
 
-        if num_frames > 1:
-            other_frames = ops.upsampling2d(scale_factor=self.upsample_factor, mode="nearest")(other_frames)
-            hidden_states = ops.concatenate()([first_frame, other_frames], dim=2)
-        else:
-            hidden_states = first_frame
+        # other_frames = ops.dynamic_slice()(
+        #     hidden_states,
+        #     start_indices=[0, 1, 0, 0, 0],
+        #     end_indices=[None, None, None, None, None],
+        # )
+        # other_frames._attrs["shape"][1] = hidden_states._attrs["shape"][1] - 1
+
+        first_frame = ops.unsqueeze(1)(ops.upsampling2d(scale_factor=self.upsample_factor[1:][0], mode="nearest")(ops.squeeze(1)(first_frame)))
+
+        # # if num_frames._attrs["int_var"] > 1:
+        # other_frames = ops.upsampling2d(scale_factor=self.upsample_factor[1:][0], mode="nearest")(other_frames)
+
+        # hidden_states = ops.concatenate()([first_frame, other_frames], dim=1)
+        # # else:
+        hidden_states = first_frame
 
         hidden_states = self.conv(hidden_states)
         return hidden_states
@@ -124,12 +146,12 @@ class HunyuanVideoResnetBlockCausal3D(nn.Module):
         super().__init__()
         out_channels = out_channels or in_channels
 
-        self.nonlinearity = get_activation(non_linearity)
+        self.nonlinearity = get_activation(non_linearity) if non_linearity != "swish" else None
 
-        self.norm1 = nn.GroupNorm(groups, in_channels, eps=eps, affine=True)
+        self.norm1 = nn.GroupNorm(groups, in_channels, eps=eps, affine=True, use_swish=non_linearity == "swish")
         self.conv1 = HunyuanVideoCausalConv3d(in_channels, out_channels, 3, 1, 0)
 
-        self.norm2 = nn.GroupNorm(groups, out_channels, eps=eps, affine=True)
+        self.norm2 = nn.GroupNorm(groups, out_channels, eps=eps, affine=True, use_swish=non_linearity == "swish")
         self.dropout = nn.Dropout(dropout)
         self.conv2 = HunyuanVideoCausalConv3d(out_channels, out_channels, 3, 1, 0)
 
@@ -138,15 +160,17 @@ class HunyuanVideoResnetBlockCausal3D(nn.Module):
             self.conv_shortcut = HunyuanVideoCausalConv3d(in_channels, out_channels, 1, 1, 0)
 
     def forward(self, hidden_states: Tensor) -> Tensor:
-        hidden_states = hidden_states.contiguous()
+        hidden_states = nn.Identity(dtype=hidden_states.dtype())(hidden_states)
         residual = hidden_states
 
         hidden_states = self.norm1(hidden_states)
-        hidden_states = self.nonlinearity(hidden_states)
+        if self.nonlinearity is not None:
+            hidden_states = self.nonlinearity(hidden_states)
         hidden_states = self.conv1(hidden_states)
 
         hidden_states = self.norm2(hidden_states)
-        hidden_states = self.nonlinearity(hidden_states)
+        if self.nonlinearity is not None:
+            hidden_states = self.nonlinearity(hidden_states)
         hidden_states = self.dropout(hidden_states)
         hidden_states = self.conv2(hidden_states)
 
@@ -223,13 +247,13 @@ class HunyuanVideoMidBlock3D(nn.Module):
 
         for attn, resnet in zip(self.attentions, self.resnets[1:]):
             if attn is not None:
-                batch_size, num_channels, num_frames, height, width = hidden_states.shape
-                hidden_states = hidden_states.permute(0, 2, 3, 4, 1).flatten(1, 3)
+                batch_size, num_frames, height, width, num_channels = ops.size()(hidden_states)
+                hidden_states = ops.reshape()(hidden_states, [batch_size._attrs["int_var"], num_frames._attrs["int_var"] * height._attrs["int_var"] * width._attrs["int_var"], num_channels])
                 attention_mask = prepare_causal_attention_mask(
-                    num_frames, height * width, hidden_states.dtype, hidden_states.device, batch_size=batch_size
+                    num_frames._attrs["int_var"], height._attrs["int_var"] * width._attrs["int_var"], hidden_states.dtype(), batch_size=batch_size
                 )
                 hidden_states = attn(hidden_states, attention_mask=attention_mask)
-                hidden_states = hidden_states.unflatten(1, (num_frames, height, width)).permute(0, 4, 1, 2, 3)
+                hidden_states = ops.reshape()(hidden_states, [batch_size, num_frames, height, width, num_channels])
 
             hidden_states = resnet(hidden_states)
 
@@ -428,8 +452,7 @@ class HunyuanVideoEncoder3D(nn.Module):
             add_attention=mid_block_add_attention,
         )
 
-        self.conv_norm_out = nn.GroupNorm(num_channels=block_out_channels[-1], num_groups=norm_num_groups, eps=1e-6)
-        self.conv_act = nn.SiLU()
+        self.conv_norm_out = nn.GroupNorm(num_channels=block_out_channels[-1], num_groups=norm_num_groups, eps=1e-6, use_swish=True)
 
         conv_out_channels = 2 * out_channels if double_z else out_channels
         self.conv_out = HunyuanVideoCausalConv3d(block_out_channels[-1], conv_out_channels, kernel_size=3)
@@ -443,7 +466,6 @@ class HunyuanVideoEncoder3D(nn.Module):
         hidden_states = self.mid_block(hidden_states)
 
         hidden_states = self.conv_norm_out(hidden_states)
-        hidden_states = self.conv_act(hidden_states)
         hidden_states = self.conv_out(hidden_states)
 
         return hidden_states
@@ -528,8 +550,7 @@ class HunyuanVideoDecoder3D(nn.Module):
             prev_output_channel = output_channel
 
         # out
-        self.conv_norm_out = nn.GroupNorm(num_channels=block_out_channels[0], num_groups=norm_num_groups, eps=1e-6)
-        self.conv_act = nn.SiLU()
+        self.conv_norm_out = nn.GroupNorm(num_channels=block_out_channels[0], num_groups=norm_num_groups, eps=1e-6, use_swish=True)
         self.conv_out = HunyuanVideoCausalConv3d(block_out_channels[0], out_channels, kernel_size=3)
 
     def forward(self, hidden_states: Tensor) -> Tensor:
@@ -542,7 +563,6 @@ class HunyuanVideoDecoder3D(nn.Module):
 
         # post-process
         hidden_states = self.conv_norm_out(hidden_states)
-        hidden_states = self.conv_act(hidden_states)
         hidden_states = self.conv_out(hidden_states)
 
         return hidden_states
@@ -632,7 +652,7 @@ class AutoencoderKLHunyuanVideo(nn.Module):
         # When decoding temporally long video latents, the memory requirement is very high. By decoding latent frames
         # at a fixed frame batch size (based on `self.tile_sample_min_num_frames`), the memory requirement can be lowered.
         self.use_framewise_encoding = True
-        self.use_framewise_decoding = True
+        self.use_framewise_decoding = False
 
         # The minimal tile height and width for spatial tiling to be used
         self.tile_sample_min_height = 256
@@ -706,7 +726,7 @@ class AutoencoderKLHunyuanVideo(nn.Module):
         self.use_slicing = False
 
     def _encode(self, x: Tensor) -> Tensor:
-        batch_size, num_channels, num_frames, height, width = x.shape
+        batch_size, num_frames, height, width, num_channels = ops.size()(x)
 
         if self.use_framewise_encoding and num_frames > self.tile_sample_min_num_frames:
             return self._temporal_tiled_encode(x)
@@ -733,9 +753,9 @@ class AutoencoderKLHunyuanVideo(nn.Module):
                 The latent representations of the encoded videos. If `return_dict` is True, a
                 [`~models.autoencoder_kl.AutoencoderKLOutput`] is returned, otherwise a plain `tuple` is returned.
         """
-        if self.use_slicing and x.shape[0] > 1:
-            encoded_slices = [self._encode(x_slice) for x_slice in x.split(1)]
-            h = torch.cat(encoded_slices)
+        if self.use_slicing and ops.size()(x, dim=0) > 1:
+            encoded_slices = [self._encode(x_slice) for x_slice in ops.split()(x, ops.size()(x, dim=1), dim=1)]
+            h = ops.concatenate()(encoded_slices)
         else:
             h = self._encode(x)
 
@@ -746,15 +766,17 @@ class AutoencoderKLHunyuanVideo(nn.Module):
         return AutoencoderKLOutput(latent_dist=posterior)
 
     def _decode(self, z: Tensor, return_dict: bool = True) -> Union[DecoderOutput, Tensor]:
-        batch_size, num_channels, num_frames, height, width = z.shape
+        batch_size, num_frames, height, width, num_channels = ops.size()(z)
         tile_latent_min_height = self.tile_sample_min_height // self.spatial_compression_ratio
         tile_latent_min_width = self.tile_sample_stride_width // self.spatial_compression_ratio
         tile_latent_min_num_frames = self.tile_sample_min_num_frames // self.temporal_compression_ratio
 
-        if self.use_framewise_decoding and num_frames > tile_latent_min_num_frames:
+        # TODO: this is data-dependent / true value of num_frames isn't known at compile time
+        if self.use_framewise_decoding and num_frames._attrs["int_var"] > tile_latent_min_num_frames:
             return self._temporal_tiled_decode(z, return_dict=return_dict)
 
-        if self.use_tiling and (width > tile_latent_min_width or height > tile_latent_min_height):
+        # TODO: this is data-dependent
+        if self.use_tiling and (width._attrs["int_var"] > tile_latent_min_width or height._attrs["int_var"] > tile_latent_min_height):
             return self.tiled_decode(z, return_dict=return_dict)
 
         z = self.post_quant_conv(z)
@@ -779,9 +801,10 @@ class AutoencoderKLHunyuanVideo(nn.Module):
                 If return_dict is True, a [`~models.vae.DecoderOutput`] is returned, otherwise a plain `tuple` is
                 returned.
         """
-        if self.use_slicing and z.shape[0] > 1:
-            decoded_slices = [self._decode(z_slice).sample for z_slice in z.split(1)]
-            decoded = torch.cat(decoded_slices)
+        if self.use_slicing and ops.size()(z, dim=0) > 1:
+            # TODO: split on dynamic dim
+            decoded_slices = [self._decode(z_slice).sample for z_slice in ops.split()(z, ops.size()(z, dim=1), dim=1)]
+            decoded = ops.concatenate()(decoded_slices)
         else:
             decoded = self._decode(z).sample
 
@@ -824,7 +847,7 @@ class AutoencoderKLHunyuanVideo(nn.Module):
             `Tensor`:
                 The latent representation of the encoded videos.
         """
-        batch_size, num_channels, num_frames, height, width = x.shape
+        batch_size, num_frames, height, width, num_channels = ops.size()(x)
         latent_height = height // self.spatial_compression_ratio
         latent_width = width // self.spatial_compression_ratio
 
@@ -859,9 +882,9 @@ class AutoencoderKLHunyuanVideo(nn.Module):
                 if j > 0:
                     tile = self.blend_h(row[j - 1], tile, blend_width)
                 result_row.append(tile[:, :, :, :tile_latent_stride_height, :tile_latent_stride_width])
-            result_rows.append(torch.cat(result_row, dim=4))
+            result_rows.append(ops.concatenate()(result_row, dim=4))
 
-        enc = torch.cat(result_rows, dim=3)[:, :, :, :latent_height, :latent_width]
+        enc = ops.concatenate()(result_rows, dim=3)[:, :, :, :latent_height, :latent_width]
         return enc
 
     def tiled_decode(self, z: Tensor, return_dict: bool = True) -> Union[DecoderOutput, Tensor]:
@@ -879,7 +902,7 @@ class AutoencoderKLHunyuanVideo(nn.Module):
                 returned.
         """
 
-        batch_size, num_channels, num_frames, height, width = z.shape
+        batch_size, num_frames, height, width, num_channels = ops.size()(z)
         sample_height = height * self.spatial_compression_ratio
         sample_width = width * self.spatial_compression_ratio
 
@@ -914,16 +937,16 @@ class AutoencoderKLHunyuanVideo(nn.Module):
                 if j > 0:
                     tile = self.blend_h(row[j - 1], tile, blend_width)
                 result_row.append(tile[:, :, :, : self.tile_sample_stride_height, : self.tile_sample_stride_width])
-            result_rows.append(torch.cat(result_row, dim=-1))
+            result_rows.append(ops.concatenate()(result_row, dim=-1))
 
-        dec = torch.cat(result_rows, dim=3)[:, :, :, :sample_height, :sample_width]
+        dec = ops.concatenate()(result_rows, dim=3)[:, :, :, :sample_height, :sample_width]
 
         if not return_dict:
             return (dec,)
         return DecoderOutput(sample=dec)
 
     def _temporal_tiled_encode(self, x: Tensor) -> AutoencoderKLOutput:
-        batch_size, num_channels, num_frames, height, width = x.shape
+        batch_size, num_frames, height, width, num_channels = ops.size()(x)
         latent_num_frames = (num_frames - 1) // self.temporal_compression_ratio + 1
 
         tile_latent_min_num_frames = self.tile_sample_min_num_frames // self.temporal_compression_ratio
@@ -950,11 +973,11 @@ class AutoencoderKLHunyuanVideo(nn.Module):
             else:
                 result_row.append(tile[:, :, : tile_latent_stride_num_frames + 1, :, :])
 
-        enc = torch.cat(result_row, dim=2)[:, :, :latent_num_frames]
+        enc = ops.concatenate()(result_row, dim=2)[:, :, :latent_num_frames]
         return enc
 
     def _temporal_tiled_decode(self, z: Tensor, return_dict: bool = True) -> Union[DecoderOutput, Tensor]:
-        batch_size, num_channels, num_frames, height, width = z.shape
+        batch_size, num_frames, height, width, num_channels = ops.size()(z)
         num_sample_frames = (num_frames - 1) * self.temporal_compression_ratio + 1
 
         tile_latent_min_height = self.tile_sample_min_height // self.spatial_compression_ratio
@@ -983,7 +1006,7 @@ class AutoencoderKLHunyuanVideo(nn.Module):
             else:
                 result_row.append(tile[:, :, : self.tile_sample_stride_num_frames + 1, :, :])
 
-        dec = torch.cat(result_row, dim=2)[:, :, :num_sample_frames]
+        dec = ops.concatenate()(result_row, dim=2)[:, :, :num_sample_frames]
 
         if not return_dict:
             return (dec,)
@@ -994,7 +1017,7 @@ class AutoencoderKLHunyuanVideo(nn.Module):
         sample: Tensor,
         sample_posterior: bool = False,
         return_dict: bool = True,
-        generator: Optional[torch.Generator] = None,
+        generator = None,
     ) -> Union[DecoderOutput, Tensor]:
         r"""
         Args:
