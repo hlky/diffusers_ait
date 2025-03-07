@@ -98,6 +98,10 @@ _CLASS_MAPPING = {
         "ait": modeling.autoencoders.AutoencoderKL,
         "pt": diffusers.models.autoencoders.autoencoder_kl.AutoencoderKL,
     },
+    "AutoencoderKLHunyuanVideo": {
+        "ait": modeling.autoencoders.AutoencoderKLHunyuanVideo,
+        "pt": diffusers.models.autoencoders.autoencoder_kl_hunyuan_video.AutoencoderKLHunyuanVideo,
+    },
 }
 
 

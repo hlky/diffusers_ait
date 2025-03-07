@@ -472,7 +472,8 @@ class Attention(nn.Module):
         if attention_mask is None:
             return attention_mask
 
-        batch, current_length = ops.size()(attention_mask)
+        batch = ops.size()(attention_mask, dim=0)._attrs["int_var"]
+        current_length = ops.size()(attention_mask, dim=-1)._attrs["int_var"]
         if current_length != target_length:
             # TODO: for pipelines such as stable-diffusion, padding cross-attn mask:
             #       we want to instead pad by (0, remaining_length), where remaining_length is:
@@ -485,7 +486,7 @@ class Attention(nn.Module):
             )
 
         if out_dim == 3:
-            if ops.size()(attention_mask, dim=0) < batch_size * head_size:
+            if ops.size()(attention_mask, dim=0)._attrs["int_var"] < batch_size * head_size:
                 attention_mask = ops.repeat_interleave(head_size, 0)(attention_mask)
         elif out_dim == 4:
             attention_mask = ops.unsqueeze(1)(attention_mask)
@@ -561,7 +562,7 @@ class AttnProcessor2_0:
 
         if attention_mask is not None:
             attention_mask = attn.prepare_attention_mask(
-                attention_mask, sequence_length, batch_size
+                attention_mask, sequence_length._attrs["int_var"], batch_size._attrs["int_var"]
             )
             # scaled_dot_product_attention expects attention_mask shape to be
             # (batch, heads, source_length, target_length)

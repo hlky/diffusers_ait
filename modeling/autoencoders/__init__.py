@@ -1,4 +1,5 @@
 from .autoencoder_asym_kl import AsymmetricAutoencoderKL
+from .autoencoder_kl_hunyuan_video import AutoencoderKLHunyuanVideo
 from .autoencoder_kl import AutoencoderKL
 from .autoencoder_kl_temporal_decoder import AutoencoderKLTemporalDecoder
 from .autoencoder_tiny import AutoencoderTiny
