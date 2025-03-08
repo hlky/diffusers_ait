@@ -1,6 +1,7 @@
 from aitemplate.compiler import compile_model
 from aitemplate.frontend import IntVar, Tensor
 from aitemplate.testing import detect_target
+from aitemplate.testing.benchmark_ait import benchmark_module
 
 from config import load_config, mark_output
 
@@ -121,7 +122,7 @@ constants = map_vae(pt)
 
 target = detect_target()
 
-compile_model(
+module = compile_model(
     latents,
     target,
     "./tmp",
@@ -129,3 +130,5 @@ compile_model(
     constants=constants,
     dll_name=f"{model_name}.so",
 )
+
+benchmark_module(module=module, count=50, repeat=3)
