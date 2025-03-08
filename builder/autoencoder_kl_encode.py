@@ -107,7 +107,7 @@ sample = Tensor(
         IntVar([batch_size[0], batch_size[1]]),
         IntVar([height[0] // 8, height[1] // 8]),
         IntVar([width[0] // 8, width[1] // 8]),
-        config["out_channels"],
+        config["latent_channels"],
     ],
     name="sample",
     is_input=True,
