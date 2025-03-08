@@ -698,7 +698,7 @@ class VectorQuantizer(nn.Module):
 class DiagonalGaussianDistribution(object):
     def __init__(self, parameters: Tensor, deterministic: bool = False):
         self.parameters = parameters
-        self.mean, self.logvar = ops.chunk()(parameters, 2, dim=1)
+        self.mean, self.logvar = ops.chunk()(parameters, 2, dim=-1)
         self.logvar = ops.clamp()(self.logvar, -30.0, 20.0)
         self.deterministic = deterministic
         self.std = ops.exp(0.5 * self.logvar)
