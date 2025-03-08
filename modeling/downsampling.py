@@ -136,8 +136,17 @@ class Downsample2D(nn.Module):
             hidden_states = self.norm(hidden_states)
 
         if self.use_conv and self.padding == 0:
-            pad = (0, 1, 0, 1)
-            hidden_states = ops.pad(pad=pad, mode="constant", value=0.0)(hidden_states)
+            # TODO
+            padding = ops.full()([0, 1, 0, 0], 0.0, dtype=self.dtype)
+            padding._attrs["shape"][0] = hidden_states._attrs["shape"][0]
+            padding._attrs["shape"][2] = hidden_states._attrs["shape"][2]
+            padding._attrs["shape"][3] = hidden_states._attrs["shape"][3]
+            hidden_states = ops.concatenate()([hidden_states, padding], dim=1)
+            padding = ops.full()([0, 0, 1, 0], 0.0, dtype=self.dtype)
+            padding._attrs["shape"][0] = hidden_states._attrs["shape"][0]
+            padding._attrs["shape"][1] = hidden_states._attrs["shape"][1]
+            padding._attrs["shape"][3] = hidden_states._attrs["shape"][3]
+            hidden_states = ops.concatenate()([hidden_states, padding], dim=2)
 
         assert hidden_states.shape()[-1] == self.channels
 
