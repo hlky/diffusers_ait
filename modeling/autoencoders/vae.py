@@ -79,7 +79,7 @@ class Encoder(nn.Module):
         super().__init__()
         self.layers_per_block = layers_per_block
 
-        self.conv_in = nn.Conv2dBias(
+        self.conv_in = nn.Conv2dBiasFewChannels(
             in_channels,
             block_out_channels[0],
             kernel_size=3,
@@ -698,7 +698,7 @@ class VectorQuantizer(nn.Module):
 class DiagonalGaussianDistribution(object):
     def __init__(self, parameters: Tensor, deterministic: bool = False):
         self.parameters = parameters
-        self.mean, self.logvar = ops.chunk()(parameters, 2, dim=1)
+        self.mean, self.logvar = ops.chunk()(parameters, 2, dim=-1)
         self.logvar = ops.clamp()(self.logvar, -30.0, 20.0)
         self.deterministic = deterministic
         self.std = ops.exp(0.5 * self.logvar)
@@ -708,14 +708,7 @@ class DiagonalGaussianDistribution(object):
                 ops.size()(self.mean), fill_value=0.0, dtype=self.parameters.dtype()
             )
 
-    def sample(self, generator=None) -> Tensor:
-        # make sure sample is on the same device as the parameters and has same dtype
-        sample = randn_tensor(
-            self.mean.shape,
-            generator=generator,
-            device=self.parameters.device,
-            dtype=self.parameters.dtype,
-        )
+    def sample(self, sample: Tensor) -> Tensor:
         x = self.mean + self.std * sample
         return x
 
