@@ -1,3 +1,5 @@
+# Deprecated: Use [HoneyML](https://github.com/hlky/honeyml)
+
 # Diffusers AIT
 
 Diffusers for AITemplate
